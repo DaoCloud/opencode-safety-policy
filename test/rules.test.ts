@@ -168,6 +168,16 @@ describe("matchRule", () => {
     expect(matches({ command: "rm", pattern: " /$" }, "shred -rf /")).toBe(false)
   })
 
+  test("pattern also sees the stdin of rules with a command", () => {
+    const withStdin = (fields: Partial<InlineRule>, line: string, stdin: string) =>
+      matchRule(compileRule(rule({ id: "r", ...fields })), { ...input(line), stdin })
+    const flush = { command: "redis-cli", pattern: "(?i:(^| )flushall( |$))" }
+    expect(withStdin(flush, "redis-cli -h db", "PING\n  FLUSHALL\n")).toBe(true)
+    expect(withStdin(flush, "redis-cli -h db", "PING\n")).toBe(false)
+    expect(withStdin(flush, "redis-cli flushall", "PING\n")).toBe(true)
+    expect(withStdin({ pattern: "flushall" }, "cat", "flushall\n")).toBe(false)
+  })
+
   test("scope restricts local and remote atoms", () => {
     expect(matches({ command: "rm", scope: "remote" }, "rm x", true)).toBe(true)
     expect(matches({ command: "rm", scope: "remote" }, "rm x", false)).toBe(false)
@@ -249,5 +259,6 @@ describe("decide", () => {
         { decision: "allow", ruleId: "d" },
       ]),
     ).toEqual({ decision: "deny", ruleId: "b" })
+    expect(combine([{ decision: "allow", ruleId: "a" }, { decision: "allow" }])).toEqual({ decision: "allow", ruleId: "a" })
   })
 })

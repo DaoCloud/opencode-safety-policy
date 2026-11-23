@@ -9,7 +9,9 @@
  *   not necessarily adjacent, so that `kubectl delete --grace-period 0 namespace x` matches `delete namespace`;
  * - `flags`: one flag is present. `-f` also matches inside a short cluster such as `-rf`, `--force` also matches
  *   `--force=true`, and `--replicas=0` also matches `--replicas 0`;
- * - `pattern`: the regex matches `name arg1 arg2 ...`;
+ * - `pattern`: the regex matches `name arg1 arg2 ...`. For rules with `command`, inline stdin (heredoc / here-string)
+ *   is input to that command, so the regex is also tried on `name arg1 ... stdin` with stdin whitespace collapsed
+ *   (`psql <<SQL DROP TABLE x`). Rules without `command` ignore stdin so that `cat <<EOF > x.sh` is not matched;
  * - `scope`: `local` / `remote` restricts the rule to local or remote atoms.
  * `http` rules are matched in P1-3; a rule with only `http` never matches here.
  */
@@ -22,6 +24,8 @@ export interface MatchInput {
   /** Arguments after path expansion; `argv[0]` may still carry a path such as `/usr/bin/rm`. */
   argv: string[]
   isRemote: boolean
+  /** Inline stdin text of the atom. */
+  stdin?: string
 }
 
 export interface CompiledRule {
@@ -36,7 +40,7 @@ const COMMAND_SPECS = new Map<string, OptionSpec>([
   ["docker", OPTION_SPECS.docker],
 ])
 
-const NO_OPTIONS: OptionSpec = { shortValue: "", longValue: new Set() }
+export const NO_OPTIONS: OptionSpec = { shortValue: "", longValue: new Set() }
 
 export function compileRule(rule: InlineRule): CompiledRule {
   const compiled: CompiledRule = { rule }
@@ -62,10 +66,15 @@ export function matchRule(compiled: CompiledRule, input: MatchInput): boolean {
     }
     if (rule.flags && !rule.flags.some((flag) => hasFlag(argv, flag, spec))) return false
   }
-  return !regex || regex.test([name, ...argv.slice(1)].join(" "))
+  if (!regex) return true
+  const text = [name, ...argv.slice(1)].join(" ")
+  if (regex.test(text)) return true
+  const stdin = commands && input.stdin?.trim()
+  return !!stdin && regex.test(`${text} ${stdin.split(/\s+/).join(" ")}`)
 }
 
-function positionals(argv: string[], spec: OptionSpec): string[] {
+/** Positional arguments after `argv[0]`, skipping options of `spec`; everything after `--` is positional. */
+export function positionals(argv: string[], spec: OptionSpec): string[] {
   const words: string[] = []
   for (let i = 1; i < argv.length; ) {
     if (argv[i] === "--") return [...words, ...argv.slice(i + 1)]

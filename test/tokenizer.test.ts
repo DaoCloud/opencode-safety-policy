@@ -62,6 +62,11 @@ describe("command names", () => {
     const command = first(`$CMD -rf "$DIR" '$X' ${"${HOME}"}/a *.log plain`)
     expect(command.expanded).toEqual([true, false, true, false, true, true, false])
   })
+
+  test("marks unquoted bracket globs and brace expansions", () => {
+    const command = first(`/bin/r[m] {rm,-rf,/} r{m,} {1..3} x[ ]y {} @{u} "{a,b}" \\[a] '[a]'`)
+    expect(command.expanded).toEqual([true, true, true, true, false, false, false, false, false, false, false])
+  })
 })
 
 describe("lists and pipelines", () => {

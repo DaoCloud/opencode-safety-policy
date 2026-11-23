@@ -84,9 +84,9 @@ export function decide(input: MatchInput, set: RuleSet, mode: Mode): Verdict {
   return combine(verdicts)
 }
 
-/** The strongest verdict; the first one wins a tie. */
+/** The strongest verdict; the first one wins a tie, so an allowing rule keeps its id. */
 export function combine(verdicts: Verdict[]): Verdict {
-  return verdicts.reduce((best, next) => (RANK[next.decision] > RANK[best.decision] ? next : best), ALLOW)
+  return verdicts.reduce((best, next) => (RANK[next.decision] > RANK[best.decision] ? next : best), verdicts[0] ?? ALLOW)
 }
 
 function verdict(decision: Decision, compiled: CompiledRule): Verdict {

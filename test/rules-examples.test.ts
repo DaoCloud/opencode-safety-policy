@@ -1,12 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import path from "node:path"
-import { expandPathArgs } from "../src/path-util"
-import { compileRule, matchRule, type MatchInput } from "../src/rules/matcher"
+import { analyze } from "../src/analyzer"
 import { buildRuleSet } from "../src/rules"
 import { BUILTIN_RULES_DIR, loadBuiltinRules, validateRule } from "../src/rules/loader"
-import { tokenize } from "../src/tokenizer"
 import type { Rule } from "../src/types"
-import { unwrap } from "../src/unwrapper"
 
 // Paths that do not exist, so path expansion is deterministic.
 const CWD = "/ocsp-examples/work/project"
@@ -96,12 +93,11 @@ const FIXTURE_RULES: Rule[] = [
   },
 ]
 
-/** Atoms of a command line as the analyzer sees them: local path arguments are expanded to absolute paths. */
-function atomInputs(line: string): MatchInput[] {
-  return unwrap(tokenize(line)).map((atom) => ({
-    argv: atom.isRemote ? atom.argv : expandPathArgs(atom.argv, atom.expanded, CWD, HOME).argv,
-    isRemote: atom.isRemote,
-  }))
+/** Runs the whole analyzer with only `rule` in `strict`, where every rule hit is reported on its atom. */
+function matches(line: string, rule: Rule): boolean {
+  const rules = buildRuleSet({ rules: [rule] })
+  const result = analyze({ command: line, locationDirectory: CWD, mode: "strict", rules, readOnly: new Map(), home: HOME })
+  return result.atoms.some((atom) => atom.ruleId === rule.id)
 }
 
 function exampleCases(rules: Rule[]) {
@@ -126,8 +122,7 @@ describe("built-in rules", () => {
   })
 
   test.each(exampleCases(BUILTIN_RULES))("%s %s: %s", (_id, kind, line, rule) => {
-    const compiled = compileRule(rule)
-    expect(atomInputs(line).some((input) => matchRule(compiled, input))).toBe(kind === "match")
+    expect(matches(line, rule)).toBe(kind === "match")
   })
 })
 
@@ -145,7 +140,6 @@ describe("fixture rules", () => {
   })
 
   test.each(exampleCases(FIXTURE_RULES))("%s %s: %s", (_id, kind, line, rule) => {
-    const compiled = compileRule(rule)
-    expect(atomInputs(line).some((input) => matchRule(compiled, input))).toBe(kind === "match")
+    expect(matches(line, rule)).toBe(kind === "match")
   })
 })

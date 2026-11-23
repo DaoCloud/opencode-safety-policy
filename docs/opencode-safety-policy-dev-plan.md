@@ -208,14 +208,15 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### P0-8 Analyzer（P0 版）与 SSH 策略
 
 - 设计：3.1（Stage 1/3/4）、3.2、4.3、5.1
-- 产出：`src/analyzer.ts`、`src/rules/ssh-policy.ts`；`test/rules-examples.test.ts` 改为通过 analyzer 全链路执行
+- 产出：`src/analyzer.ts`、`src/rules/ssh-policy.ts`、`test/analyzer.test.ts`；`test/rules-examples.test.ts` 改为通过 analyzer 全链路执行
 - 要点：
-  - 纯函数：`analyze({ command, workdir, locationDirectory, mode, rules }) → { decision, ruleId, reason, atoms }`。
-  - 远端只读白名单放行；未知远端命令在 `strict` 下 `ask`。
-  - 只读白名单按命令前缀匹配，规则命中优先于白名单。带值全局选项会遮住子命令的 CLI（如 `ipmitool -H bmc1 sel list`）需要在 `src/cli-options.ts` 补选项表。
-  - P0 阶段 `nice`、`command`、`exec`、`xargs`、`eval` 等 wrapper 尚未剥离（见 P1-1），`nice rm -rf /` 不会命中 `command` 规则。可考虑把常见 wrapper 提前到本步，或对未识别的 wrapper 默认 `ask`。
-  - heredoc 正文（如 `psql <<SQL ... DROP TABLE ...`）不在 argv 中，`sql-drop` 等规则匹配不到，本步需决定是否把 heredoc 正文纳入匹配。
-  - 结合 `workdir` 判定，如 `shell({ workdir: "/", command: "rm -rf etc" })`。
+  - 纯函数：`analyze({ command, workdir, locationDirectory, mode, rules, readOnly, home }) → { decision, ruleId, reason, atoms }`，`readOnly` 由 `loadReadOnlyList(options.sshReadOnlyAllowlist)` 构建。
+  - 远端只读白名单放行；未知远端命令在 `strict` 下 `ask`（`unknown-remote-command`）。
+  - 只读白名单按命令前缀匹配，规则命中优先于白名单。`kubectl`、`docker`、`ipmitool` 先跳过全局选项（`ipmitool -H bmc1 sel list`）。输出重定向写文件的远端命令不算只读。
+  - 常见 wrapper 已提前到本步：`nice`、`command`、`builtin`、`exec`、`time`、`stdbuf`、`ionice`、`setsid`、`doas`、`su`、`runuser`、`xargs`（输入记为变量参数 `$XARGS_INPUT`）、`eval`。
+  - heredoc / here-string 正文纳入匹配：带 `command` 的规则把 stdin 接在参数后再试一次（`psql <<SQL DROP TABLE x`）；shell、`ssh`、`sudo -s`、`su` 无命令时以 stdin 为脚本递归分析（`bash <<EOF`、`ssh host <<EOF`）。
+  - 结合 `workdir` 判定，如 `shell({ workdir: "/", command: "rm -rf etc" })`，并跟踪 `cd`/`pushd`、`env -C`、`sudo -D/-i`、`su -` 的目录切换；无法静态确定的目录按占位目录与 `/` 各评估一次，仅经 `/` 推出的 `deny` 降为 `ask`。
+  - opaque 脚本与动态命令名（`$CMD`、`/bin/r[m]`、`{rm,-rf,/}`）在 `strict` 下 `deny`、`relaxed` 下 `ask`；tokenizer 把未加引号的 `[...]` 与 `{a,b}`/`{1..3}` 记为 expanded。
 - 验证：`bun test`
 - commit：`feat: add command analyzer and ssh policy`
 
@@ -289,14 +290,15 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - 产出：扩展 tokenizer、unwrapper、analyzer 及其测试
 - 要点：
   - 检测动态命令名、函数封装、`eval`、`base64 -d | sh`、`$'\x..'`。
-  - 补充 wrapper：`xargs`、`find -exec/-delete`、`ansible -m shell/command/raw`、`pdsh`、`pssh`、`clush`、`su -c`、`nice`、`stdbuf`、`command`、`exec`、`nerdctl/crictl/podman exec`、`time`、`ionice`、`setsid`、`chroot`、`doas`、`runuser`、`flock`、`watch`、`builtin`、`parallel`。
+  - 补充 wrapper：`find -exec/-delete`、`ansible -m shell/command/raw`、`pdsh`、`pssh`、`clush`、`nerdctl/crictl/podman exec`、`chroot`、`flock`、`watch`、`parallel`（`nice`、`xargs`、`su -c` 等常见 wrapper 已在 P0-8 完成）。
+  - 参数位置的 brace 展开（`rm -rf {/etc,/tmp}`）目前只记为 expanded，规则看到的仍是原文，需展开后再匹配。
   - 只覆盖内置 `ShellParse.scan` 能解析的形态。scan 判为 opaque 的命令，内置 shell 已经会失败。
 - commit：`feat: detect opaque and obfuscated commands`
 
 ### P1-2 SSH heredoc、管道与重定向
 
 - 设计：3.2（后六行）
-- 要点：heredoc 正文逐行递归分析；本地脚本经 `<` 重定向时读入并扫描；上游为静态文本时解析内容；动态上游标记 `opaqueRemoteStdin`；远端未知脚本标记 `unknownRemoteCommand`。
+- 要点：heredoc / here-string 喂给 shell 与 `ssh` 的正文已在 P0-8 递归分析；本地脚本经 `<` 重定向时读入并扫描；上游为静态文本时解析内容；动态上游标记 `opaqueRemoteStdin`；远端未知脚本标记 `unknownRemoteCommand`。
 - commit：`feat: analyze ssh heredoc, pipe and redirect input`
 
 ### P1-3 HTTP 提取与受保护端点
@@ -434,7 +436,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [x] P0-5 规则引擎
 - [x] P0-6 内置规则
 - [x] P0-7 配置与模式状态
-- [ ] P0-8 Analyzer 与 SSH 策略
+- [x] P0-8 Analyzer 与 SSH 策略
 - [ ] P0-9 execute.before Hook
 - [ ] P0-10 evaluate Hook 与基础自保护
 - [ ] P0-11 Server 入口与 RPC

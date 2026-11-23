@@ -29,12 +29,42 @@
     {
       "id": "ipmitool-bmc-write",
       "severity": "high",
-      "reason": "禁止复位 BMC、发送原始 IPMI 命令或修改 BMC 网络、用户、日志与固件",
+      "reason": "禁止复位 BMC、发送原始 IPMI 命令或修改 BMC 网络、用户、日志、传感器阈值、FRU、电源恢复策略与固件",
       "command": "ipmitool",
-      "subcommands": ["mc reset", "raw", "lan set", "user set", "user disable", "sel clear", "fru write", "hpm upgrade"],
+      "subcommands": [
+        "mc reset",
+        "raw",
+        "lan set",
+        "user set",
+        "user disable",
+        "sel clear",
+        "sel delete",
+        "sensor thresh",
+        "sdr fill",
+        "fru write",
+        "fru edit",
+        "fru upgEkey",
+        "chassis policy always-on",
+        "chassis policy previous",
+        "chassis policy always-off",
+        "hpm upgrade"
+      ],
       "examples": {
-        "match": ["ipmitool mc reset cold", "ipmitool -H bmc1 raw 0x30 0x01", "ipmitool lan set 1 ipaddr 10.0.0.9"],
-        "ignore": ["ipmitool mc info", "ipmitool sel list", "echo ipmitool mc reset cold"]
+        "match": [
+          "ipmitool mc reset cold",
+          "ipmitool -H bmc1 raw 0x30 0x01",
+          "ipmitool lan set 1 ipaddr 10.0.0.9",
+          "ipmitool -H bmc1 sensor thresh CPU0_Temp upper 80 90 95",
+          "ipmitool chassis policy always-off",
+          "ssh jump ipmitool -H bmc1 sdr fill sensors"
+        ],
+        "ignore": [
+          "ipmitool mc info",
+          "ipmitool sel list",
+          "ipmitool chassis policy list",
+          "ipmitool -H bmc1 sensor get CPU0_Temp",
+          "echo ipmitool mc reset cold"
+        ]
       }
     },
     {

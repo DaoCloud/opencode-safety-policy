@@ -138,13 +138,18 @@
   │       避免 --kubeconfig /path、--as admin、-o ProxyCommand=... 干扰子命令提取
   │     • 对 rm/shred/chmod/chown/dd/mv/find -delete 等路径敏感命令，将相对路径参数（含 . / .. / *）
   │       基于 effectiveCwd 展开为规范绝对路径，防止 shell({ workdir: "/", command: "rm -rf etc" }) 绕过
+  │     • 跟踪 cd/pushd 与 env -C、sudo -D/-i、su - 的目录切换：候选目录只增不减（cd 失败时仍留在原目录），
+  │       超过 8 个时追加“未知目录”。未知目录（cd $X、cd -、登录 shell 的 home）分别按深层占位目录和 / 评估，
+  │       与目录无关的 deny（如绝对路径 /etc）保持不变，仅经 / 推出的 deny 降为 ask
   │
   ├─► Stage 2: 特征、混淆与 Opaque 检测（Obfuscation & Opaque Detector）
   │     OpenCode 内置 shell 的 ShellParse.scan 遇到 OpaqueReason（command-substitution、
   │     compound-command、dynamic-command-name、部分 heredoc / dynamic-execution 等）时直接让工具失败、
   │     不执行命令；本阶段只需覆盖 scan 能解析、但语义仍无法静态判定的形态，并在 execute.before 中给出
   │     带规则原因的拒绝。识别并标记：
-  │     • 动态命令名与函数封装（CMD=rm; $CMD ...、f() { ... }; f ...）-> opaque
+  │     • 动态命令名与函数封装（CMD=rm; $CMD ...、f() { ... }; f ...）-> opaque。命令名中的 glob 与
+  │       brace 展开（/bin/r[m]、{rm,-rf,/}）同样视为动态；仅目录部分动态而 basename 为字面量的
+  │       （"$(go env GOPATH)/bin/sudo"）按该 basename 判定
   │     • 管道向远程解释器喂脚本（... | ssh host sh/bash/python）
   │     • Heredoc / Here-string 喂 SSH（ssh host bash <<'EOF' ... EOF）
   │     • 本地文件重定向喂 SSH（ssh host bash < script.sh）
@@ -155,8 +160,10 @@
   │
   ├─► Stage 3: Wrapper 递归拆壳（Recursive Unwrapper，最大深度 8）
   │     逐层剥离外层包装器，并记录执行上下文（isRemote、targetHost、wrapperChain）：
-  │     • 权限/环境包装：sudo、su -c、env、timeout、nohup、nice、stdbuf、command、exec
-  │     • Shell 嵌套：sh -c、bash -c、zsh -c、dash -c
+  │     • 权限/环境包装：sudo、su -c、runuser、doas、env、timeout、nohup、nice、stdbuf、ionice、setsid、
+  │       time、command、builtin、exec、eval
+  │     • Shell 嵌套：sh -c、bash -c、zsh -c、dash -c；无 -c 时以 stdin（heredoc / here-string）为脚本
+  │       （bash <<EOF、ssh host <<EOF、sudo -s <<EOF、su root <<EOF）
   │     • 远程执行：ssh、sshpass、pdsh、pssh、clush、ansible ... -m shell/command/raw
   │     • 容器/集群进入：kubectl exec --、docker exec、nerdctl exec、crictl exec、podman exec
   │     • 批处理：xargs、find ... -exec/-delete
@@ -185,7 +192,7 @@
 |---|---|---|
 | **直接附带远程命令** | `ssh root@node1 "kubectl delete pod foo"` | 解析 `ssh` 参数（跳过 `-i/-p/-o/-F/-J/-l/-W` 等带值选项及无值 flag），提取 `destination` 后所有参数作为远程命令并递归回送 Stage 1，标记 `isRemote: true` |
 | **嵌套引号/多层 shell** | `ssh node1 "sudo bash -c 'rm -rf /data/*'"` | 递归剥离 `ssh` → `sudo` → `bash -c`，还原出 `rm -rf /data/*`（`isRemote: true`） |
-| **Heredoc 喂脚本** | `ssh node1 'bash -s' <<'EOF' \n rm -rf /tmp/a \n EOF` | 提取 heredoc 正文并逐行递归分析；若正文含高危命令则直接 `deny`，否则按 SSH 脚本形态降级 `ask` |
+| **Heredoc 喂脚本** | `ssh node1 'bash -s' <<'EOF' \n rm -rf /tmp/a \n EOF` | 提取 heredoc 正文作为远端脚本递归分析，每条命令与直接附带的远程命令同等判定：命中规则按规则处置，只读白名单放行，其余在 `strict` 下 `ask` |
 | **本地文件重定向** | `ssh node1 'bash -s' < ./cleanup.sh` | 检查本地文件路径，在允许读取范围内读入内容并递归扫描；不可读或含高危命令直接 `deny`，否则 `ask` |
 | **上游静态文本管道** | `echo "docker stop app" \| ssh node1 sh` | 解析上游字面量文本并递归分析；命中高危直接 `deny` |
 | **不可静态分析的管道/动态流** | `curl -s ... \| ssh node1 sh`、`base64 -d \| ssh node1 sh` | 标记 `opaqueRemoteStdin`，遵循 **fail-closed**：`strict` 下直接 `deny`，`relaxed` 下强制 `ask` |
@@ -227,7 +234,7 @@
   - `command` 可以是字符串或数组，与归一化后的命令名比较。
   - `subcommands` 中任一项命中即可，多词项（如 `"delete namespace"`）的后续词按顺序出现即可，不要求相邻。对有带值选项表的 CLI（`kubectl`、`docker`），首词必须是第一个位置参数。其他 CLI 的首词可以出现在任意位置参数上，避免未知的带值选项（如 `helm -n prod uninstall`）遮住子命令。
   - `flags` 中任一项命中即可。`-f` 也匹配短选项簇（如 `-rf`），`--force` 也匹配 `--force=…`，`--replicas=0` 也匹配 `--replicas 0`。`--` 之后的参数不参与匹配。
-  - `pattern` 作用于 `命令名 参数1 参数2 …`。本机路径参数已展开为绝对路径。
+  - `pattern` 作用于 `命令名 参数1 参数2 …`。本机路径参数已展开为绝对路径。带 `command` 的规则还会把 heredoc / here-string 正文（空白折叠为单个空格）接在参数后再试一次，如 `psql <<SQL DROP TABLE x`。不带 `command` 的规则不看 stdin，避免 `cat <<EOF > x.sh` 写脚本时误报。
   - `scope` 为 `local` / `remote` 时，只匹配本机或远端原子命令。
 - 内联规则按原子命令逐条判定，优先级如下：
   1. `off` 模式全部放行（防自篡改单独处理）；
@@ -245,16 +252,18 @@
 | **`rules/linux-host.json`**<br>Linux 文件、磁盘与服务 | **致命/高危（`critical`/`high`）**：`rm -rf /` / 系统关键路径（`/etc`、`/var`、`/usr`、`/boot`、`/home`、`/data`、`/*`）或远端 SSH 任意 `rm`、`shred`、`find ... -delete`/`-exec rm`、`mkfs*`、`fdisk`、`parted`、`wipefs`、`dd of=/dev/...`、`lvremove`/`vgremove`/`pvremove`、`mdadm --stop/--zero-superblock`、`zfs destroy`、`reboot`/`shutdown`/`poweroff`/`halt`/`init 0/6`、`systemctl stop/disable/mask`、`chmod -R 777 /`、`userdel`、`crontab -r`；<br>**中危（`medium`，`strict` 下 `ask` 减少误报）**：本机工作区或 `/tmp` 下非递归根路径的常规 `rm`/`rmdir`/`unlink`、普通进程 `kill`/`pkill` |
 | **`rules/spectrum-cumulus.json`**<br>NVIDIA Spectrum 交换机（Cumulus Linux） | **NVUE**：`nv set`、`nv unset`、`nv config apply`/`detach`/`replace`、`nv action reboot`/`reset`/`install`/`upgrade`；<br>**NCLU & 系统**：`net add`/`del`/`commit`/`abort`、`ifreload -a`、`systemctl stop/restart switchd`、`onie-select`（重装 NOS）、修改 `/etc/network/interfaces` 或 `/etc/nvue.d/` |
 | **`rules/ib-ufm.json`**<br>NVIDIA InfiniBand 交换机 & UFM | **IB 交换机（NVOS / MLNX-OS）**：`nv set/unset/config apply/action ...`、`reload`、`reset factory`、`shutdown`、`no interface`、`image boot/install`、`configuration delete`（经 `ssh` 或管道喂入多行 CLI）；<br>**主机侧 IB/GPU 工具**：`ibportstate disable/reset`、`mlxconfig set`、`flint`/`mlxburn`/`mstfwreset`、`opensm` 启停、`nvidia-smi --gpu-reset`；<br>**UFM 服务与 REST API**：`ufmd stop/restart`、`systemctl stop ufm-enterprise`、`ufm_ha_cluster` 切换、非 `GET` 请求发往 `/ufmRest/actions`（端口隔离/节点重启/固件升级）或 `/ufmRest/resources/pkeys` |
-| **`rules/oob-redfish.json`**<br>主机带外管理（Redfish / BMC / IPMI / NICo） | **CLI**：`ipmitool power off/reset/cycle`、`ipmitool chassis bootdev pxe/cdrom`、`ipmitool mc reset`、`ipmitool raw`、`redfishtool` 写子命令；<br>**Redfish REST API（防重装机/断电/刷固件）**：对 `/redfish/v1/` 发起的非 `GET` 请求，重点拦截：<br>• `.../Actions/ComputerSystem.Reset`（强制断电/重启）<br>• `.../Actions/VirtualMedia.InsertMedia` / `EjectMedia`（挂载重装 ISO）<br>• `PATCH /redfish/v1/Systems/...` 含 `BootSourceOverrideTarget`（切换 PXE/CD 触发重装）<br>• `.../Actions/Manager.Reset` / `ResetToDefaults`（重置 BMC）<br>• `.../UpdateService/Actions/UpdateService.SimpleUpdate`（刷固件）<br>**管理端点兜底**：发往用户配置的 `protectedEndpoints`（BMC 网段、NICo VIP、UFM VIP）的任意 `POST`/`PUT`/`PATCH`/`DELETE` 请求默认 `deny`（致命动作）或 `ask` |
+| **`rules/oob-redfish.json`**<br>主机带外管理（Redfish / BMC / IPMI / NICo） | **CLI**：`ipmitool power off/reset/cycle`、`ipmitool chassis bootdev pxe/cdrom`、`ipmitool mc reset`、`ipmitool raw`、`ipmitool sensor thresh`/`sdr fill`/`fru edit`/`chassis policy`/`sel clear`/`sel delete` 等 BMC 写操作、`redfishtool` 写子命令；<br>**Redfish REST API（防重装机/断电/刷固件）**：对 `/redfish/v1/` 发起的非 `GET` 请求，重点拦截：<br>• `.../Actions/ComputerSystem.Reset`（强制断电/重启）<br>• `.../Actions/VirtualMedia.InsertMedia` / `EjectMedia`（挂载重装 ISO）<br>• `PATCH /redfish/v1/Systems/...` 含 `BootSourceOverrideTarget`（切换 PXE/CD 触发重装）<br>• `.../Actions/Manager.Reset` / `ResetToDefaults`（重置 BMC）<br>• `.../UpdateService/Actions/UpdateService.SimpleUpdate`（刷固件）<br>**管理端点兜底**：发往用户配置的 `protectedEndpoints`（BMC 网段、NICo VIP、UFM VIP）的任意 `POST`/`PUT`/`PATCH`/`DELETE` 请求默认 `deny`（致命动作）或 `ask` |
 | **`rules/network-db.json`**<br>通用网络 / 数据库 | `ip link set ... down`、`ip addr flush/del`、`ip route flush/del`、`iptables -F/-X`、`nft flush`、`nmcli ... delete/down`、`rsync --delete`；`DROP DATABASE`/`DROP TABLE`/`TRUNCATE`/`FLUSHALL`/`FLUSHDB` |
 | **SSH 管道、混淆、内置破坏工具与防自篡改** | 管道/重定向/heredoc 喂给 `ssh ... sh/bash/python`、`base64 -d \| sh`、`eval`、动态命令名 / 本地脚本 TOCTOU；内置 `opencode_worktree_remove`（`opencode` namespace，仅在 Code Mode 中可用，内部以 `action: "edit"` 审批；尤其 `force: true`，在 `strict` 下 `deny`）；检查 `shell` 工具 `input.workdir`（若 `effectiveCwd` 位于受保护目录内且含写/删/重定向操作则直接 `deny`）；通过 `permission.hook("evaluate")` + `tool.hook("execute.before")` 联动，拦截 `write`/`edit`/`patch`、Code Mode `fetch`（受保护端点非 `GET`/`HEAD` 写请求及重定向默认 `deny`）与 `Bun.write`/`Bun.file().delete()`/`unlink()` 对经 `path.join(realpath(nearestExistingAncestor(p)), relativeTail)` 规范化后的敏感路径（本插件目录、`/etc/opencode/`、`~/.config/opencode/opencode.json`、`.opencode/`、`rulesFile`、`/etc/network/interfaces`、`/etc/nvue.d/`）的篡改；<br>**防绕过 `/safety` 与审批**：拦截对 `~/.config/opencode/service.json`（Server 密码）的读取，对 OpenCode 数据库（`~/.local/share/opencode/opencode*.db` 及 `-wal`/`-shm`，或 `OPENCODE_DB` 指定路径）的读写与 `sqlite3` 访问，以及 `curl`/`wget`/`http`/Code Mode `fetch` 发往本机回环地址（`localhost`/`127.0.0.1`/`::1`，不限端口）上 OpenCode Server `/api/` 路径的请求 |
 
 ### 4.3 远端 SSH 只读白名单（`rules/ssh-readonly.json`，用于 `strict` 模式减少误报）
 在 `strict` 模式下，通过 `ssh` 发往远端的命令如果是**纯只读巡检命令**且不带输出重定向，可直接放行（不弹窗），提高运维排障流畅度：
-- **Linux / K8s / 容器只读**：`ls`、`cat`、`head`、`tail`、`grep`、`rg`、`df`、`du`、`free`、`uptime`、`uname`、`hostname`、`whoami`、`id`、`ps`、`ss`、`ip addr/route/link show`、`systemctl status`、`journalctl`、`dmesg`、`kubectl get/describe/logs/top/cluster-info`、`docker ps/images/logs/inspect`、`crictl ps/pods/logs/inspect`。
+- **Linux / K8s / 容器只读**：`cd`、`pwd`、`echo`、`ls`、`cat`、`head`、`tail`、`grep`、`rg`、`df`、`du`、`free`、`uptime`、`uname`、`hostname`、`whoami`、`id`、`ps`、`ss`、`ip addr/route/link show`、`systemctl status`、`journalctl`、`dmesg`、`kubectl get/describe/logs/top/cluster-info`、`docker ps/images/logs/inspect`、`crictl ps/pods/logs/inspect`。
 - **Spectrum / Cumulus / IB / GPU / UFM 只读**：`nv show`、`net show`、`nvidia-smi`（不含 `--gpu-reset`/`-r`）、`ibstat`、`ibv_devinfo`、`ibswitches`、`iblinkinfo`、`sminfo`、`mlxlink`、`ipmitool sensor/sdr/fru/sel list/chassis status/power status`，以及发往 Redfish / UFM 的纯 `GET` 查询。
   > 注：`ibdiagnet` 会向 `/var/tmp/ibdiagnet2` 写入大量诊断产物并执行全网扫描，**不放入**无条件只读白名单（默认在 `strict` 下走 `ask`，有需要可在 `sshReadOnlyAllowlist` 中按需显式加入）。
 - 文件格式为 `{ "commands": [ "<命令名> [子命令...]", ... ] }`，条目与 `sshReadOnlyAllowlist` 相同，是命令前缀，例如 `"kubectl get"`、`"ipmitool sel list"`、`"mlxlink"`。
+- 前缀从第一个位置参数开始逐词比较。`kubectl`、`docker`、`ipmitool` 会先跳过全局选项（`kubectl -n prod get pods`、`ipmitool -I lanplus -H bmc sel list`），其他命令的带值选项会被当作位置参数，因此不会命中多词条目。
+- 带输出重定向写文件的命令不算只读。`/dev/null`、`/dev/stdout`、`/dev/stderr` 与 `2>&1` 这类 fd 复制不算写文件。
 - 白名单只影响"未知远端命令"的默认 `ask`，不覆盖规则。远端命令命中任何规则时按规则判定，例如 `nvidia-smi -r` 命中 `nvidia-smi-reset`，`mlxlink -a DN` 命中 `mlxlink-write`。
 
 ---

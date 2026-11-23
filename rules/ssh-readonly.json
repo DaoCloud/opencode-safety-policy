@@ -1,5 +1,8 @@
 {
   "commands": [
+    "cd",
+    "pwd",
+    "echo",
     "ls",
     "cat",
     "head",

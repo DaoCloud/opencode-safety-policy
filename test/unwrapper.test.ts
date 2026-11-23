@@ -72,6 +72,121 @@ describe("local wrappers", () => {
     expect(atom?.argv).toEqual(["$CMD", "-rf", "/"])
     expect(atom?.expanded[0]).toBe(true)
   })
+
+  test.each([
+    [`"$(go env GOPATH)/bin/sudo" rm x`, ["sudo"]],
+    ["$PREFIX/bin/env rm x", ["env"]],
+    ["$SUDO rm x", []],
+    ["$(echo /usr/bin/sudo) rm x", []],
+    ["sud[o] rm x", []],
+  ])("unwraps %s only when the basename is literal", (input, chain) => {
+    expect(atoms(input).at(-1)?.wrapperChain).toEqual(chain)
+  })
+
+  test.each([
+    ["nice -n 10 rm x", ["rm", "x"], ["nice"]],
+    ["nice -10 rm x", ["rm", "x"], ["nice"]],
+    ["command -p -- rm x", ["rm", "x"], ["command"]],
+    ["builtin cd /", ["cd", "/"], ["builtin"]],
+    ["exec -a name rm x", ["rm", "x"], ["exec"]],
+    ["time -f %e rm x", ["rm", "x"], ["time"]],
+    ["stdbuf -o L -eL rm x", ["rm", "x"], ["stdbuf"]],
+    ["ionice -c 3 rm x", ["rm", "x"], ["ionice"]],
+    ["setsid -f rm x", ["rm", "x"], ["setsid"]],
+    ["doas -u root rm x", ["rm", "x"], ["doas"]],
+    ["su -c 'rm -rf /'", ["rm", "-rf", "/"], ["su -c"]],
+    ["su - root -s /bin/sh -c 'rm x'", ["rm", "x"], ["su -c"]],
+    ["su root -- -c 'rm x'", ["rm", "x"], ["su -c"]],
+    ["runuser -l app --command='rm x'", ["rm", "x"], ["runuser -c"]],
+    ["runuser -u app -- rm x", ["rm", "x"], ["runuser"]],
+    ["eval 'rm -rf /'", ["rm", "-rf", "/"], ["eval"]],
+    ["nice sudo time rm x", ["rm", "x"], ["nice", "sudo", "time"]],
+  ])("%s", (input, argv, wrapperChain) => {
+    expect(only(input)).toMatchObject({ argv, isRemote: false, wrapperChain })
+  })
+
+  test.each(["command -v rm", "command -pV rm", "ionice -p 1", "doas -C /etc/doas.conf", "su", "su root script.sh", "exec", "eval", "xargs -0"])(
+    "%s does not unwrap a command",
+    (input) => {
+      expect(only(input).wrapperChain).toEqual([])
+    },
+  )
+})
+
+describe("xargs", () => {
+  test.each([
+    ["xargs rm -rf", ["rm", "-rf", "$XARGS_INPUT"], [false, false, true]],
+    ["xargs -0 -n1 -P 4 rm", ["rm", "$XARGS_INPUT"], [false, true]],
+    ["xargs -eif rm -rf", ["rm", "-rf", "$XARGS_INPUT"], [false, false, true]],
+    ["xargs -I {} rm {}/x", ["rm", "$XARGS_INPUT/x"], [false, true]],
+    ["xargs -i rm {}", ["rm", "$XARGS_INPUT"], [false, true]],
+    ["xargs -0i@ rm @", ["rm", "$XARGS_INPUT"], [false, true]],
+    ["xargs --replace=@ rm -- @", ["rm", "--", "$XARGS_INPUT"], [false, false, true]],
+  ])("%s", (input, argv, expanded) => {
+    const [atom] = atoms(input)
+    expect(atom).toMatchObject({ argv, expanded, wrapperChain: ["xargs"] })
+  })
+
+  test("applies to the right side of a pipe", () => {
+    expect(atoms("find / -name x | xargs rm -rf").map((atom) => atom.argv)).toEqual([
+      ["find", "/", "-name", "x"],
+      ["rm", "-rf", "$XARGS_INPUT"],
+    ])
+  })
+})
+
+describe("stdin", () => {
+  const stdin = (input: string) => atoms(input).map((atom) => [atom.name, atom.stdin])
+
+  test.each([
+    ["psql <<SQL\nDROP TABLE x\nSQL", [["psql", "DROP TABLE x\n"]]],
+    ["psql <<-'SQL'\n\tDROP TABLE x\n\tSQL", [["psql", "DROP TABLE x\n"]]],
+    ["mysql <<<'drop database x'", [["mysql", "drop database x"]]],
+    ["psql < dump.sql", [["psql", undefined]]],
+    ["psql <<<x < dump.sql", [["psql", undefined]]],
+    ["psql 2<<<x", [["psql", undefined]]],
+  ])("%s", (input, expected) => {
+    expect(stdin(input)).toEqual(expected)
+  })
+
+  test("flows through wrappers and remote shells", () => {
+    expect(stdin("sudo -u postgres psql <<<'drop table x'")).toEqual([["psql", "drop table x"]])
+    expect(atoms("ssh db psql <<<'drop table x'")[0]).toMatchObject({ name: "psql", isRemote: true, stdin: "drop table x" })
+  })
+
+  test("is replaced by a pipe inside a script", () => {
+    expect(stdin("bash -c 'cat | psql' <<<x")).toEqual([
+      ["cat", "x"],
+      ["psql", undefined],
+    ])
+  })
+
+  test("is not shared between separate commands", () => {
+    expect(stdin("psql <<<x; psql")).toEqual([
+      ["psql", "x"],
+      ["psql", undefined],
+    ])
+  })
+
+  test.each([
+    ["bash <<EOF\nrm -rf /\nEOF", ["bash -s"], false],
+    ["sh -s arg <<<'rm x'", ["sh -s"], false],
+    ["bash - <<<'rm x'", ["bash -s"], false],
+    ["bash /dev/stdin <<<'rm x'", ["bash -s"], false],
+    ["su root <<<'rm x'", ["su -s"], false],
+    ["sudo -u root -i <<<'rm x'", ["sudo -s"], false],
+    ["ssh -T h <<'EOF'\nrm x\nEOF", ["ssh"], true],
+    ["ssh h bash <<<'rm x'", ["ssh", "bash -s"], true],
+    ["kubectl exec -i p -- sh <<<'rm x'", ["kubectl exec", "sh -s"], true],
+  ])("%s runs stdin as a script", (input, wrapperChain, isRemote) => {
+    const [atom] = atoms(input)
+    expect(atom).toMatchObject({ name: "rm", isRemote, wrapperChain })
+    expect(atom?.stdin).toBeUndefined()
+  })
+
+  test.each(["bash script.sh <<<'rm x'", "ssh h <hosts.txt", "bash"])("%s does not run stdin", (input) => {
+    expect(only(input).wrapperChain).toEqual([])
+  })
 })
 
 describe("shell -c", () => {
@@ -235,5 +350,24 @@ describe("opaque and limits", () => {
     const result = atoms(nest(8, (s) => `bash -c "$(${s})"`, "echo " + "a".repeat(50_000)))
     expect(result.length).toBeLessThan(100)
     expect(result.at(-1)).toMatchObject({ opaque: "too-long", wrapperChain: expect.arrayContaining(["bash -c"]) })
+  })
+})
+
+describe("chdir", () => {
+  test.each([
+    ["env -C / rm x", ["/"]],
+    ["sudo -D /tmp env --chdir=.. rm x", ["/tmp", ".."]],
+    ["sudo -iu root rm x", [null]],
+    ["sudo -i <<<'rm x'", [null]],
+    ["su - -c 'rm x'", [null]],
+    ["su -lc 'rm x'", [null]],
+    ["runuser -l app -c 'rm x'", [null]],
+  ])("%s", (input, chdir) => {
+    expect(atoms(input)[0]?.chdir).toEqual(chdir)
+  })
+
+  test("other wrappers keep the directory", () => {
+    expect(atoms("su root -c 'rm x'")[0]?.chdir).toBeUndefined()
+    expect(atoms("sudo -u root rm x")[0]?.chdir).toBeUndefined()
   })
 })

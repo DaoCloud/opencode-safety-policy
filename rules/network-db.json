@@ -105,7 +105,8 @@
           "mysql -e 'DROP DATABASE app'",
           "psql -c 'truncate table users'",
           "sqlite3 app.db 'drop table t'",
-          "mongosh --eval 'db.dropDatabase()'"
+          "mongosh --eval 'db.dropDatabase()'",
+          "psql -h db <<'SQL'\nDROP TABLE users;\nSQL"
         ],
         "ignore": ["mysql -e 'SELECT 1'", "psql -c 'select * from drop_log'", "echo 'DROP DATABASE app'"]
       }
@@ -117,7 +118,7 @@
       "command": ["redis-cli", "valkey-cli", "keydb-cli"],
       "pattern": "(?i:(^| )(flushall|flushdb)( |$))",
       "examples": {
-        "match": ["redis-cli FLUSHALL", "redis-cli -h 10.0.0.1 -n 2 flushdb async"],
+        "match": ["redis-cli FLUSHALL", "redis-cli -h 10.0.0.1 -n 2 flushdb async", "redis-cli -h 10.0.0.1 <<< FLUSHALL"],
         "ignore": ["redis-cli info", "echo redis-cli FLUSHALL"]
       }
     }

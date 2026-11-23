@@ -35,7 +35,10 @@ export interface Command {
   name: string
   /** Unquoted words, `argv[0]` is the command word before normalization. */
   argv: string[]
-  /** `expanded[i]` is true when `argv[i]` contains a parameter/command/arithmetic expansion or an unquoted glob. */
+  /**
+   * `expanded[i]` is true when `argv[i]` contains a parameter/command/arithmetic expansion, an unquoted glob
+   * (`*`, `?`, `[...]`) or a brace expansion (`{a,b}`, `{1..3}`).
+   */
   expanded: boolean[]
   redirects: Redirect[]
   /** Scripts from `$(...)`, backticks and `<(...)` / `>(...)` found anywhere in this command. */
@@ -101,6 +104,14 @@ export function tokenize(input: string): Script {
 export function normalizeName(word: string): string {
   const name = word.replace(/^\\+/, "")
   return name.slice(name.lastIndexOf("/") + 1)
+}
+
+/**
+ * True when an expanded command word has no literal basename (`$CMD`, `$(which rm)`, `r[m]`, `{rm,-rf,/}`).
+ * `"$(go env GOPATH)/bin/sudo"` has the literal basename `sudo`.
+ */
+export function isDynamicName(word: string, expanded: boolean): boolean {
+  return expanded && /[$`(){}[\]*?]/.test(normalizeName(word))
 }
 
 function newCommand(): Command {
@@ -380,6 +391,10 @@ class Parser {
     let text = ""
     let quoted = false
     let expanded = false
+    // Unquoted `[...]` globs and `{a,b}` / `{a..b}` brace expansions.
+    let bracket = false
+    let braces = 0
+    let braceList = false
     while (this.pos < src.length) {
       const c = src.charAt(this.pos)
       if (META.includes(c)) {
@@ -439,6 +454,14 @@ class Parser {
         continue
       }
       if (c === "*" || c === "?") expanded = true
+      else if (c === "[") bracket = true
+      else if (c === "]" && bracket) expanded = true
+      else if (c === "{") braces++
+      else if (braces > 0 && (c === "," || (c === "." && src[this.pos + 1] === "."))) braceList = true
+      else if (c === "}" && braces > 0) {
+        braces--
+        if (braceList) expanded = true
+      }
       text += c
       this.pos++
     }

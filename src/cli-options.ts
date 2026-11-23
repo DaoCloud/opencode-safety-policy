@@ -36,6 +36,16 @@ export const OPTION_SPECS = {
   env: spec("uCS", ["unset", "chdir", "split-string"]),
   timeout: spec("sk", ["signal", "kill-after"]),
   nohup: spec(""),
+  nice: spec("n", ["adjustment"]),
+  exec: spec("a"),
+  time: spec("fo", ["format", "output"]),
+  stdbuf: spec("ioe", ["input", "output", "error"]),
+  ionice: spec("cnpPu", ["class", "classdata", "pid", "pgid", "uid"]),
+  doas: spec("Cu"),
+  // `su` and `runuser` share util-linux option parsing; `-u` only exists in `runuser`.
+  su: spec("cgGsuw", ["command", "session-command", "group", "supp-group", "shell", "user", "whitelist-environment"]),
+  xargs: spec("adEILnPs", ["arg-file", "delimiter", "max-lines", "max-args", "max-procs", "max-chars", "process-slot-var"]),
+  ipmitool: spec("AbBCdDefHIklLmNoOpPRStTUyz"),
   shell: spec("", ["rcfile", "init-file"]),
   // Global options plus the value-taking options of `kubectl exec`.
   kubectl: spec("nsvcf", [
