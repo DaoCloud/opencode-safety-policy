@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {
+      "id": "worktree-remove-force",
+      "severity": "high",
+      "reason": "禁止强制删除 worktree，未提交的修改和未跟踪文件会丢失",
+      "command": "opencode_worktree_remove",
+      "pattern": "\"force\":true",
+      "examples": {
+        "match": [
+          "opencode_worktree_remove '{\"directory\":\"/repo/wt\",\"force\":true}'",
+          "opencode_worktree_remove '{\"force\":true,\"directory\":\"/repo/wt\"}'"
+        ],
+        "ignore": [
+          "opencode_worktree_remove '{\"directory\":\"/repo/wt\"}'",
+          "opencode_worktree_remove '{\"directory\":\"/repo/wt\",\"force\":false}'",
+          "echo opencode_worktree_remove '{\"force\":true}'"
+        ]
+      }
+    }
+  ]
+}

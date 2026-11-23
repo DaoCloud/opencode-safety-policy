@@ -13,6 +13,8 @@
  *   is input to that command, so the regex is also tried on `name arg1 ... stdin` with stdin whitespace collapsed
  *   (`psql <<SQL DROP TABLE x`). Rules without `command` ignore stdin so that `cat <<EOF > x.sh` is not matched;
  * - `scope`: `local` / `remote` restricts the rule to local or remote atoms.
+ * A non-shell tool call is matched as `[tool ID, JSON input]`, and only by rules whose `command` lists the tool ID, so
+ * that a pattern-only rule does not hit file content written by `edit`.
  * `http` rules are matched in P1-3; a rule with only `http` never matches here.
  */
 
@@ -26,6 +28,8 @@ export interface MatchInput {
   isRemote: boolean
   /** Inline stdin text of the atom. */
   stdin?: string
+  /** A non-shell tool call. */
+  tool?: boolean
 }
 
 export interface CompiledRule {
@@ -54,7 +58,7 @@ export function matchRule(compiled: CompiledRule, input: MatchInput): boolean {
   const { rule, commands, subcommands, regex } = compiled
   if (rule.scope === "local" && input.isRemote) return false
   if (rule.scope === "remote" && !input.isRemote) return false
-  if (!commands && !regex) return false
+  if (!commands && (!regex || input.tool)) return false
   const argv = input.argv
   const name = normalizeName(argv[0] ?? "")
   if (commands) {

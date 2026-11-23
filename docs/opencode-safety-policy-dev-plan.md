@@ -223,7 +223,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### P0-9 execute.before Hook
 
 - 设计：2（架构图与分工表）、1.2
-- 产出：`src/hooks/tool.ts`、`rules/opencode-tools.json`、`test/helpers/fake-context.ts`、`test/plugin.test.ts`
+- 产出：`src/policy.ts`、`src/hooks/tool.ts`、`rules/opencode-tools.json`、`test/helpers/fake-context.ts`、`test/plugin.test.ts`
 - 要点：
   - `shell`：调用 analyze。`deny` 时抛 `Error("[safety-policy:<id>] <reason>")`。`ask` 时登记标记 `{ sessionID, callID, command, ruleId, reason, expiresAt }`，放在 Map 中（S6 已验证同一实例）。
   - 非 shell 工具（MCP、`opencode_worktree_remove` 等）按设计 4.1 的工具规则判定：`argv` 为 `[<工具 ID>, <紧凑 JSON 输入>]`，只匹配 `command` 列出该工具 ID 的规则。`opencode_worktree_remove` 的 `force: true` 是 `rules/opencode-tools.json` 中的 `high` 规则（`strict` 下 `deny`，`relaxed` 下 `ask`）。
@@ -437,7 +437,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [x] P0-6 内置规则
 - [x] P0-7 配置与模式状态
 - [x] P0-8 Analyzer 与 SSH 策略
-- [ ] P0-9 execute.before Hook
+- [x] P0-9 execute.before Hook
 - [ ] P0-10 evaluate Hook 与基础自保护
 - [ ] P0-11 Server 入口与 RPC
 - [ ] P0-12 TUI 入口

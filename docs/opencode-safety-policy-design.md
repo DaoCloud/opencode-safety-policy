@@ -315,7 +315,7 @@
 - **TTL 回落**：`expiresAt` 为 `null` 表示不过期。过期后恢复到 `previousMode`；`previousMode` 为 `null` 时按下一优先级（环境变量 → 配置 → `strict`）。不带 TTL 切换时 `previousMode` 为 `null`。带 TTL 切换时，若当前状态不带 TTL，`previousMode` 取当前模式；若当前状态也带 TTL，则继承它的 `previousMode`，避免临时模式在叠加切换后变成永久模式。
 - **容错**：环境变量取值非法时按 `strict` 处理（`LOCK_MODE` 非法即锁定为 `strict`）；`ctx.storage` 读取失败时按 `strict` 处理；`safety:state` 内容非法时视为不存在。
 - **`rulesFile`**：须为绝对路径数组，文件格式与内置规则相同。按 `mtime`、大小和 inode 判断变更后重新加载。文件缺失、JSON 非法、规则非法或 `id` 与其他规则重复时，每次决策都会报错，由 hook 层按失败关闭处理，直到文件修复。
-- **配置失败关闭**：`options` 非法或规则无法加载时，插件照常加载并注册 hook，但除 `off` 模式外拒绝所有工具调用（不只是 `shell`，因为无法确定哪些工具有规则），原因为 `[safety-policy:config-error] <出错的字段或文件及错误>`。模式仍按环境变量、运行时状态与默认值解析，`options.mode` 此时不生效。
+- **配置失败关闭**：`options` 非法或规则无法加载时，插件照常加载并注册 hook，但除 `off` 模式外拒绝所有工具调用（不只是 `shell`，因为无法确定哪些工具有规则），原因为 `[safety-policy:config-error] <出错的字段或文件及错误>`。模式仍按环境变量、运行时状态与默认值解析，`options.mode` 此时不生效。判定过程本身抛错时同样拒绝该调用，原因为 `[safety-policy:policy-error] <错误>`。
 
 ### 5.3 用户专属 `/safety` 交互与零副作用回显机制
 
@@ -368,6 +368,7 @@ opencode-safety-policy/       # 仓库根目录
 │   ├── types.ts              # Mode, Decision, Rule, HttpRequestInfo, PluginOptions 等类型
 │   ├── config.ts             # 解析 options / rulesFile / 环境变量 / 自定义规则合并
 │   ├── state.ts              # 基于 ctx.storage 的全局模式读写（每次决策读取 + 短缓存）与 TTL 自动回落
+│   ├── policy.ts             # 组装模式与规则：setup 不抛错，配置错误留到每次决策时抛出（失败关闭）
 │   ├── path-util.ts          # resolveCanonicalPath(nearestExistingAncestor realpath + relativeTail)
 │   ├── tokenizer.ts          # Shell 词法切分（引号、管道、重定向、heredoc、子命令提取）
 │   ├── unwrapper.ts          # 递归拆壳引擎（ssh/sshpass/sudo/bash -c/kubectl exec/docker exec/ansible/xargs）
@@ -381,7 +382,7 @@ opencode-safety-policy/       # 仓库根目录
 │   │   ├── self-protect.ts   # 防 Agent 篡改插件、opencode.json、rulesFile，读取 service.json、改写 OpenCode DB、调用本机 Server API
 │   │   └── index.ts          # 规则汇总与优先级裁决（deny > ask > allow）
 │   ├── hooks/
-│   │   ├── tool.ts           # tool.hook("execute.before"/"execute.after")（shell+workdir 的 deny 与 ask 标记、opencode_worktree_remove/MCP 的 deny 与自发 assert）
+│   │   ├── tool.ts           # tool.hook("execute.before"/"execute.after")（shell+workdir 的 deny 与 ask 标记、opencode_worktree_remove/MCP 的 deny 与自发 assert；标记按插件实例存放）
 │   │   ├── permission.ts     # permission.hook("evaluate")（按 source.id / 子串匹配标记强制 shell ask、webfetch deny、edit canonical path）
 │   │   └── session-filter.ts # 可选服务端降级命令启用时的 session.hook("context"|"compaction"|"generate") 过滤
 │   ├── rpc-handlers.ts       # Server 侧 RPC 处理器（status / setMode / test）

@@ -178,6 +178,16 @@ describe("matchRule", () => {
     expect(withStdin({ pattern: "flushall" }, "cat", "flushall\n")).toBe(false)
   })
 
+  test("tool calls only match rules with a command", () => {
+    const call = (fields: Partial<InlineRule>, tool: string, json: string) =>
+      matchRule(compileRule(rule({ id: "r", ...fields })), { argv: [tool, json], isRemote: false, tool: true })
+    const force = { command: "opencode_worktree_remove", pattern: '"force":true' }
+    expect(call(force, "opencode_worktree_remove", '{"directory":"/w","force":true}')).toBe(true)
+    expect(call(force, "opencode_worktree_remove", '{"directory":"/w"}')).toBe(false)
+    expect(call(force, "github_delete_repository", '{"force":true}')).toBe(false)
+    expect(call({ pattern: "DROP TABLE" }, "edit", '{"text":"DROP TABLE x"}')).toBe(false)
+  })
+
   test("scope restricts local and remote atoms", () => {
     expect(matches({ command: "rm", scope: "remote" }, "rm x", true)).toBe(true)
     expect(matches({ command: "rm", scope: "remote" }, "rm x", false)).toBe(false)
