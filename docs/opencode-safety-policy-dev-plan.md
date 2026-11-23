@@ -211,6 +211,9 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - 要点：
   - 纯函数：`analyze({ command, workdir, locationDirectory, mode, rules }) → { decision, ruleId, reason, atoms }`。
   - 远端只读白名单放行；未知远端命令在 `strict` 下 `ask`。
+  - 只读白名单按命令前缀匹配，规则命中优先于白名单。带值全局选项会遮住子命令的 CLI（如 `ipmitool -H bmc1 sel list`）需要在 `src/cli-options.ts` 补选项表。
+  - P0 阶段 `nice`、`command`、`exec`、`xargs`、`eval` 等 wrapper 尚未剥离（见 P1-1），`nice rm -rf /` 不会命中 `command` 规则。可考虑把常见 wrapper 提前到本步，或对未识别的 wrapper 默认 `ask`。
+  - heredoc 正文（如 `psql <<SQL ... DROP TABLE ...`）不在 argv 中，`sql-drop` 等规则匹配不到，本步需决定是否把 heredoc 正文纳入匹配。
   - 结合 `workdir` 判定，如 `shell({ workdir: "/", command: "rm -rf etc" })`。
 - 验证：`bun test`
 - commit：`feat: add command analyzer and ssh policy`
@@ -284,7 +287,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - 产出：扩展 tokenizer、unwrapper、analyzer 及其测试
 - 要点：
   - 检测动态命令名、函数封装、`eval`、`base64 -d | sh`、`$'\x..'`。
-  - 补充 wrapper：`xargs`、`find -exec/-delete`、`ansible -m shell/command/raw`、`pdsh`、`pssh`、`clush`、`su -c`、`nice`、`stdbuf`、`command`、`exec`、`nerdctl/crictl/podman exec`。
+  - 补充 wrapper：`xargs`、`find -exec/-delete`、`ansible -m shell/command/raw`、`pdsh`、`pssh`、`clush`、`su -c`、`nice`、`stdbuf`、`command`、`exec`、`nerdctl/crictl/podman exec`、`time`、`ionice`、`setsid`、`chroot`、`doas`、`runuser`、`flock`、`watch`、`builtin`、`parallel`。
   - 只覆盖内置 `ShellParse.scan` 能解析的形态。scan 判为 opaque 的命令，内置 shell 已经会失败。
 - commit：`feat: detect opaque and obfuscated commands`
 
@@ -427,7 +430,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [x] P0-3 Unwrapper
 - [x] P0-4 路径规范化
 - [x] P0-5 规则引擎
-- [ ] P0-6 内置规则
+- [x] P0-6 内置规则
 - [ ] P0-7 配置与模式状态
 - [ ] P0-8 Analyzer 与 SSH 策略
 - [ ] P0-9 execute.before Hook

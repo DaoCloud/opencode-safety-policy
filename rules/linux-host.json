@@ -1,0 +1,287 @@
+{
+  "rules": [
+    {
+      "id": "rm-system-path",
+      "severity": "critical",
+      "reason": "禁止删除根目录或系统关键目录",
+      "command": "rm",
+      "pattern": "(^| )/(\\*|(etc|var|usr|boot|home|data|root|bin|sbin|lib|lib32|lib64|opt|srv|dev|proc|sys|run|mnt)(/\\*?)?)?( |$)",
+      "examples": {
+        "match": [
+          "rm -rf /",
+          "rm -rf --no-preserve-root /",
+          "rm -fr /etc/",
+          "rm -f /etc/*",
+          "rm -rf ../../../..",
+          "ssh node1 'rm -rf /var'",
+          "cd /tmp && sudo rm -Rf /usr"
+        ],
+        "ignore": ["rm -rf ./build", "rm /etc/hosts", "rm -rf /etc/app/cache", "echo rm -rf /"]
+      }
+    },
+    {
+      "id": "rm-recursive-variable",
+      "severity": "high",
+      "reason": "禁止递归删除以变量开头的整段路径（变量为空时会删除根目录）",
+      "command": "rm",
+      "flags": ["-r", "-R", "--recursive"],
+      "pattern": "(^| )\\$(\\w+|\\{\\w+\\})(/\\*?)?( |$)",
+      "examples": {
+        "match": ["rm -rf $HOME", "rm -rf \"$BUILD_DIR/\"*", "rm -r ${PREFIX}/"],
+        "ignore": ["rm -rf \"$BUILD_DIR/out\"", "rm -f $TMPFILE", "echo rm -rf $HOME"]
+      }
+    },
+    {
+      "id": "remote-rm",
+      "severity": "high",
+      "reason": "禁止在远端主机上删除文件",
+      "command": ["rm", "rmdir", "unlink"],
+      "scope": "remote",
+      "examples": {
+        "match": ["ssh node1 rm /tmp/x", "ssh -p 2222 root@node1 'rm -f /var/log/app.log'", "kubectl exec api-0 -- rm /data/x"],
+        "ignore": ["rm /tmp/x", "ssh node1 ls /tmp", "ssh node1 echo rm /tmp/x"]
+      }
+    },
+    {
+      "id": "rm-local",
+      "severity": "medium",
+      "reason": "删除本机文件需要确认",
+      "command": ["rm", "rmdir", "unlink"],
+      "scope": "local",
+      "examples": {
+        "match": ["rm build.log", "rm -rf ./dist", "rmdir empty", "unlink /tmp/sock"],
+        "ignore": ["ssh node1 rm /tmp/x", "ls -la", "echo rm build.log"]
+      }
+    },
+    {
+      "id": "shred",
+      "severity": "high",
+      "reason": "禁止不可恢复地擦除文件",
+      "command": "shred",
+      "examples": {
+        "match": ["shred -u secret.txt", "shred -n 3 -z /dev/sdb"],
+        "ignore": ["echo shred -u secret.txt", "man shred"]
+      }
+    },
+    {
+      "id": "find-delete",
+      "severity": "high",
+      "reason": "禁止通过 find 批量删除文件",
+      "command": "find",
+      "pattern": "(^| )(-delete|-(exec|execdir|ok|okdir) (\\S*/)?(rm|rmdir|unlink|shred))( |$)",
+      "examples": {
+        "match": ["find /var/log -name '*.gz' -delete", "find . -type f -exec rm -f {} +", "find /data -execdir /bin/rm {} ;"],
+        "ignore": ["find . -name '*.log'", "find . -exec grep -l TODO {} +", "echo find . -delete"]
+      }
+    },
+    {
+      "id": "mkfs",
+      "severity": "critical",
+      "reason": "禁止格式化文件系统",
+      "pattern": "^(mkfs(\\.[\\w-]+)?|mke2fs|mkswap|mkdosfs|mkntfs)( |$)",
+      "examples": {
+        "match": ["mkfs.ext4 /dev/sdb1", "sudo /sbin/mkfs -t xfs /dev/sdc", "mkswap /dev/sdd2"],
+        "ignore": ["echo mkfs.ext4 /dev/sdb1", "man mkfs"]
+      }
+    },
+    {
+      "id": "disk-partition",
+      "severity": "critical",
+      "reason": "禁止修改磁盘分区表",
+      "command": ["fdisk", "sfdisk", "gdisk", "cfdisk", "sgdisk", "parted"],
+      "pattern": "^\\S+(?!\\S)(?!(?=.* (-l|--list|-d|--dump|-p|--print|print|-V|--version|-h|--help)( |$))( (-l|--list|-d|--dump|-p|--print|print|-V|--version|-h|--help|-s|--script|-m|--machine|/dev/\\S+)(?= |$))*$)",
+      "examples": {
+        "match": [
+          "fdisk /dev/sdb",
+          "parted -s /dev/sdb mklabel gpt",
+          "sgdisk --zap-all /dev/nvme0n1",
+          "printf 'o\\nw\\n' | fdisk /dev/sdb",
+          "sfdisk /dev/sdb"
+        ],
+        "ignore": ["fdisk -l", "fdisk -l /dev/sda", "parted -s /dev/sda print", "sfdisk -d /dev/sda", "echo fdisk /dev/sdb"]
+      }
+    },
+    {
+      "id": "wipefs",
+      "severity": "critical",
+      "reason": "禁止擦除磁盘签名",
+      "command": "wipefs",
+      "flags": ["-a", "--all", "-o", "--offset"],
+      "examples": {
+        "match": ["wipefs -a /dev/sdb", "wipefs --all --force /dev/nvme0n1"],
+        "ignore": ["wipefs /dev/sdb", "echo wipefs -a /dev/sdb"]
+      }
+    },
+    {
+      "id": "dd-to-device",
+      "severity": "critical",
+      "reason": "禁止用 dd 写入块设备",
+      "command": "dd",
+      "pattern": "(^| )of=/dev/(?!(null|zero|full|tty|stdout|stderr)( |$))",
+      "examples": {
+        "match": ["dd if=/dev/zero of=/dev/sdb bs=1M", "dd if=image.iso of=/dev/nvme0n1 status=progress"],
+        "ignore": ["dd if=/dev/zero of=/tmp/file bs=1M count=10", "dd if=/dev/sda of=/dev/null bs=1M count=1", "echo dd of=/dev/sda"]
+      }
+    },
+    {
+      "id": "lvm-remove",
+      "severity": "critical",
+      "reason": "禁止删除 LVM 逻辑卷、卷组或物理卷",
+      "command": ["lvremove", "vgremove", "pvremove"],
+      "examples": {
+        "match": ["lvremove -f /dev/vg0/data", "vgremove vg0", "pvremove /dev/sdb"],
+        "ignore": ["lvs", "vgdisplay vg0", "echo lvremove /dev/vg0/data"]
+      }
+    },
+    {
+      "id": "mdadm-destroy",
+      "severity": "critical",
+      "reason": "禁止停止 RAID 阵列或清除 RAID 超级块",
+      "command": "mdadm",
+      "flags": ["--stop", "-S", "--zero-superblock"],
+      "examples": {
+        "match": ["mdadm --stop /dev/md0", "mdadm -S /dev/md0", "mdadm --zero-superblock /dev/sdb1"],
+        "ignore": ["mdadm --detail /dev/md0", "echo mdadm --stop /dev/md0"]
+      }
+    },
+    {
+      "id": "zfs-destroy",
+      "severity": "critical",
+      "reason": "禁止销毁 ZFS 数据集或存储池",
+      "command": ["zfs", "zpool"],
+      "subcommands": ["destroy"],
+      "examples": {
+        "match": ["zfs destroy -r tank/data", "zpool destroy tank"],
+        "ignore": ["zfs list", "zfs snapshot tank/data@backup", "echo zfs destroy tank/data"]
+      }
+    },
+    {
+      "id": "host-power",
+      "severity": "high",
+      "reason": "禁止重启或关闭主机",
+      "command": ["reboot", "shutdown", "poweroff", "halt"],
+      "examples": {
+        "match": ["reboot", "sudo shutdown -h now", "ssh node1 poweroff"],
+        "ignore": ["last reboot", "echo reboot", "systemctl status reboot.target"]
+      }
+    },
+    {
+      "id": "init-runlevel",
+      "severity": "high",
+      "reason": "禁止通过 init 关机或重启",
+      "pattern": "^(init|telinit) [06]( |$)",
+      "examples": {
+        "match": ["init 0", "sudo telinit 6"],
+        "ignore": ["init --version", "echo init 0"]
+      }
+    },
+    {
+      "id": "systemctl-power",
+      "severity": "high",
+      "reason": "禁止通过 systemctl 关机、重启或切换到救援模式",
+      "command": "systemctl",
+      "subcommands": ["reboot", "poweroff", "halt", "kexec", "soft-reboot", "rescue", "emergency", "isolate"],
+      "examples": {
+        "match": ["systemctl reboot", "sudo systemctl poweroff -i", "systemctl isolate rescue.target"],
+        "ignore": ["systemctl status", "systemctl status reboot.target", "echo systemctl reboot"]
+      }
+    },
+    {
+      "id": "systemctl-stop",
+      "severity": "high",
+      "reason": "禁止停止、禁用或屏蔽系统服务",
+      "command": ["systemctl", "service"],
+      "subcommands": ["stop", "disable", "mask", "kill"],
+      "examples": {
+        "match": ["systemctl stop nginx", "sudo systemctl disable --now kubelet", "service docker stop", "ssh node1 systemctl mask containerd"],
+        "ignore": ["systemctl status nginx", "systemctl restart nginx", "service nginx status", "echo systemctl stop nginx"]
+      }
+    },
+    {
+      "id": "chmod-chown-recursive-system",
+      "severity": "high",
+      "reason": "禁止递归修改根目录或系统关键目录的权限与属主",
+      "command": ["chmod", "chown", "chgrp"],
+      "flags": ["-R", "--recursive"],
+      "pattern": "(^| )/(\\*|(etc|var|usr|boot|home|data|root|bin|sbin|lib|lib32|lib64|opt|srv|dev|proc|sys|run|mnt)(/\\*?)?)?( |$)",
+      "examples": {
+        "match": ["chmod -R 777 /", "chown -R nobody /etc", "chgrp --recursive users /home"],
+        "ignore": ["chmod -R 755 ./dist", "chmod 644 /etc/hosts", "echo chmod -R 777 /"]
+      }
+    },
+    {
+      "id": "user-delete",
+      "severity": "high",
+      "reason": "禁止删除系统用户或用户组",
+      "command": ["userdel", "deluser", "groupdel", "delgroup"],
+      "examples": {
+        "match": ["userdel -r alice", "sudo deluser bob"],
+        "ignore": ["id alice", "echo userdel alice"]
+      }
+    },
+    {
+      "id": "crontab-remove",
+      "severity": "high",
+      "reason": "禁止删除整个 crontab",
+      "command": "crontab",
+      "flags": ["-r"],
+      "examples": {
+        "match": ["crontab -r", "crontab -u root -r"],
+        "ignore": ["crontab -l", "echo crontab -r"]
+      }
+    },
+    {
+      "id": "kill-process",
+      "severity": "medium",
+      "reason": "终止进程需要确认",
+      "command": ["kill", "pkill", "killall"],
+      "examples": {
+        "match": ["kill 1234", "pkill -f server.js", "killall nginx"],
+        "ignore": ["ps aux", "echo kill 1234"]
+      }
+    },
+    {
+      "id": "dmesg-clear",
+      "severity": "medium",
+      "reason": "清空内核日志缓冲区需要确认",
+      "command": "dmesg",
+      "flags": ["-C", "-c", "--clear", "--read-clear"],
+      "examples": {
+        "match": ["dmesg -C", "ssh node1 dmesg -Tc"],
+        "ignore": ["dmesg -T", "dmesg --level err", "echo dmesg -C"]
+      }
+    },
+    {
+      "id": "journalctl-vacuum",
+      "severity": "medium",
+      "reason": "清理 systemd 日志需要确认",
+      "command": "journalctl",
+      "flags": ["--vacuum-size", "--vacuum-time", "--vacuum-files"],
+      "examples": {
+        "match": ["journalctl --vacuum-time=1d", "ssh node1 journalctl --vacuum-size 100M"],
+        "ignore": ["journalctl -u kubelet --since today", "echo journalctl --vacuum-time=1d"]
+      }
+    },
+    {
+      "id": "ss-kill",
+      "severity": "medium",
+      "reason": "强制关闭网络连接需要确认",
+      "command": "ss",
+      "flags": ["-K", "--kill"],
+      "examples": {
+        "match": ["ss -K dst 10.0.0.1", "ssh node1 ss -tK sport = :8080"],
+        "ignore": ["ss -tlnp", "echo ss -K dst 10.0.0.1"]
+      }
+    },
+    {
+      "id": "hostname-set",
+      "severity": "medium",
+      "reason": "修改主机名需要确认",
+      "pattern": "^hostname( -\\w+)* [^- ]|^hostnamectl( -\\S+)* (set-hostname|hostname [^- ])",
+      "examples": {
+        "match": ["hostname node2", "ssh node1 hostnamectl set-hostname node2", "hostnamectl hostname node2"],
+        "ignore": ["hostname", "hostname -f", "hostnamectl status", "hostnamectl hostname", "echo hostname node2"]
+      }
+    }
+  ]
+}

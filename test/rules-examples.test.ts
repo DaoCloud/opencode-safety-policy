@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test"
+import path from "node:path"
 import { expandPathArgs } from "../src/path-util"
 import { compileRule, matchRule, type MatchInput } from "../src/rules/matcher"
-import { validateRule } from "../src/rules/loader"
+import { buildRuleSet } from "../src/rules"
+import { BUILTIN_RULES_DIR, loadBuiltinRules, validateRule } from "../src/rules/loader"
 import { tokenize } from "../src/tokenizer"
 import type { Rule } from "../src/types"
 import { unwrap } from "../src/unwrapper"
@@ -108,6 +110,34 @@ function exampleCases(rules: Rule[]) {
     ...(rule.examples?.ignore ?? []).map((line) => [rule.id, "ignore", line, rule] as const),
   ])
 }
+
+const BUILTIN_RULES = loadBuiltinRules()
+
+describe("built-in rules", () => {
+  test("load into one rule set with unique ids", () => {
+    expect(BUILTIN_RULES.length).toBeGreaterThan(0)
+    expect(() => buildRuleSet({ rules: BUILTIN_RULES })).not.toThrow()
+  })
+
+  test.each(BUILTIN_RULES.map((rule) => [rule.id, rule] as const))("%s has enough examples", (_id, rule) => {
+    expect(rule.examples?.match.length).toBeGreaterThanOrEqual(2)
+    expect(rule.examples?.ignore.length).toBeGreaterThanOrEqual(2)
+    expect(rule.examples?.ignore.some((line) => line.includes("echo "))).toBe(true)
+  })
+
+  test.each(exampleCases(BUILTIN_RULES))("%s %s: %s", (_id, kind, line, rule) => {
+    const compiled = compileRule(rule)
+    expect(atomInputs(line).some((input) => matchRule(compiled, input))).toBe(kind === "match")
+  })
+})
+
+test("ssh-readonly.json lists unique non-empty command prefixes", async () => {
+  const data = await Bun.file(path.join(BUILTIN_RULES_DIR, "ssh-readonly.json")).json()
+  expect(Object.keys(data)).toEqual(["commands"])
+  expect(data.commands.length).toBeGreaterThan(0)
+  for (const entry of data.commands) expect(entry).toMatch(/^\S+( \S+)*$/)
+  expect(new Set(data.commands).size).toBe(data.commands.length)
+})
 
 describe("fixture rules", () => {
   test("are valid", () => {

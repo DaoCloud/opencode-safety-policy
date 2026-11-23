@@ -1,0 +1,95 @@
+{
+  "rules": [
+    {
+      "id": "ipmitool-power",
+      "severity": "critical",
+      "reason": "禁止通过 IPMI 断电、复位或重启主机",
+      "command": "ipmitool",
+      "subcommands": ["power off", "power reset", "power cycle", "power soft", "power diag"],
+      "examples": {
+        "match": [
+          "ipmitool -I lanplus -H 10.0.0.5 -U admin -P secret chassis power off",
+          "ipmitool power cycle",
+          "ssh jump ipmitool -H bmc1 power reset"
+        ],
+        "ignore": ["ipmitool -H bmc1 power status", "ipmitool power on", "echo ipmitool power off"]
+      }
+    },
+    {
+      "id": "ipmitool-bootdev",
+      "severity": "critical",
+      "reason": "禁止通过 IPMI 把主机启动设备切换为 PXE 或光驱（会触发重装）",
+      "command": "ipmitool",
+      "subcommands": ["chassis bootdev pxe", "chassis bootdev cdrom", "chassis bootparam set bootflag"],
+      "examples": {
+        "match": ["ipmitool -H bmc1 chassis bootdev pxe", "ipmitool chassis bootdev cdrom options=persistent"],
+        "ignore": ["ipmitool chassis bootdev disk", "ipmitool chassis bootparam get 5", "echo ipmitool chassis bootdev pxe"]
+      }
+    },
+    {
+      "id": "ipmitool-bmc-write",
+      "severity": "high",
+      "reason": "禁止复位 BMC、发送原始 IPMI 命令或修改 BMC 网络、用户、日志与固件",
+      "command": "ipmitool",
+      "subcommands": ["mc reset", "raw", "lan set", "user set", "user disable", "sel clear", "fru write", "hpm upgrade"],
+      "examples": {
+        "match": ["ipmitool mc reset cold", "ipmitool -H bmc1 raw 0x30 0x01", "ipmitool lan set 1 ipaddr 10.0.0.9"],
+        "ignore": ["ipmitool mc info", "ipmitool sel list", "echo ipmitool mc reset cold"]
+      }
+    },
+    {
+      "id": "redfishtool-reset-boot",
+      "severity": "critical",
+      "reason": "禁止通过 Redfish 复位主机或 BMC、修改启动覆盖项",
+      "command": "redfishtool",
+      "subcommands": ["reset", "setBootOverride"],
+      "examples": {
+        "match": [
+          "redfishtool -r 10.0.0.5 -u admin -p secret Systems reset ForceOff",
+          "redfishtool -r bmc1 Systems setBootOverride Once Pxe",
+          "redfishtool -r bmc1 Managers reset"
+        ],
+        "ignore": ["redfishtool -r bmc1 Systems get", "redfishtool -r bmc1 Systems list", "echo redfishtool Systems reset"]
+      }
+    },
+    {
+      "id": "redfishtool-write",
+      "severity": "high",
+      "reason": "禁止通过 Redfish 修改系统属性、账户、日志、功耗或时间",
+      "command": "redfishtool",
+      "subcommands": [
+        "patch",
+        "setAssetTag",
+        "setIndicatorLed",
+        "clearLog",
+        "setPowerLimit",
+        "setDateTime",
+        "setTimeOffset",
+        "setIpAddress",
+        "adduser",
+        "deleteuser",
+        "setpassword",
+        "setusername",
+        "setSessionTimeout"
+      ],
+      "examples": {
+        "match": ["redfishtool -r bmc1 AccountService adduser bob pass Operator", "redfishtool -r bmc1 Systems Logs clearLog SEL"],
+        "ignore": ["redfishtool -r bmc1 AccountService Accounts list", "echo redfishtool AccountService adduser bob"]
+      }
+    },
+    {
+      "id": "redfishtool-raw-write",
+      "severity": "high",
+      "reason": "禁止通过 redfishtool raw 发送 Redfish 写请求",
+      "command": "redfishtool",
+      "pattern": "(^| )raw (?i:post|patch|put|delete)( |$)",
+      "examples": {
+        "match": [
+          "redfishtool -r bmc1 raw POST /redfish/v1/Systems/1/Actions/ComputerSystem.Reset",
+          "redfishtool -r bmc1 raw patch /redfish/v1/Systems/1"
+        ],
+        "ignore": ["redfishtool -r bmc1 raw GET /redfish/v1/Systems", "echo redfishtool raw POST /redfish/v1"]
+      }
+    }
+  ]
+}

@@ -9,6 +9,7 @@
   },
   "files": [
     "index.ts",
+    "rules",
     "src"
   ],
   "scripts": {

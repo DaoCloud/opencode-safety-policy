@@ -1,0 +1,184 @@
+{
+  "rules": [
+    {
+      "id": "ib-switch-reset-factory",
+      "severity": "critical",
+      "reason": "禁止将 InfiniBand 交换机恢复出厂设置",
+      "pattern": "^reset factory( |$)",
+      "scope": "remote",
+      "examples": {
+        "match": ["ssh ib-sw1 'reset factory'", "ssh admin@ib-sw1 reset factory keep-basic"],
+        "ignore": ["reset factory", "ssh ib-sw1 'show version'", "ssh ib-sw1 echo reset factory"]
+      }
+    },
+    {
+      "id": "ib-switch-disrupt",
+      "severity": "high",
+      "reason": "禁止重载 InfiniBand 交换机、删除或关闭接口、切换启动镜像或删除配置",
+      "pattern": "^(reload|no interface|image (boot|install)|configuration delete|interface .*(?<!no) shutdown)( |$)",
+      "scope": "remote",
+      "examples": {
+        "match": ["ssh ib-sw1 reload", "ssh admin@ib-sw1 'image install image-x86_64.img'", "ssh ib-sw1 'interface ib 1/1 shutdown'"],
+        "ignore": ["ssh ib-sw1 'show interfaces ib status'", "ssh ib-sw1 'interface ib 1/1 no shutdown'", "ssh ib-sw1 echo reload"]
+      }
+    },
+    {
+      "id": "ib-switch-cli-write",
+      "severity": "high",
+      "reason": "禁止通过 cli -h 在 InfiniBand 交换机上执行重载、恢复出厂、删除或关闭接口等操作",
+      "command": "cli",
+      "pattern": "(^| |\")(reload|reset factory|no interface|image (boot|install)|configuration delete|interface [^\"]*(?<!no) shutdown)( |\"|$)",
+      "scope": "remote",
+      "examples": {
+        "match": [
+          "ssh admin@ib-sw1 cli -h '\"enable\" \"configure terminal\" \"interface ib 1/1 shutdown\"'",
+          "ssh admin@ib-sw1 cli -h '\"enable\" \"reload\"'"
+        ],
+        "ignore": ["ssh admin@ib-sw1 cli -h '\"enable\" \"show interfaces ib status\"'", "ssh ib-sw1 echo cli -h reload"]
+      }
+    },
+    {
+      "id": "ibportstate-disable",
+      "severity": "high",
+      "reason": "禁止关闭或复位 InfiniBand 端口",
+      "command": "ibportstate",
+      "subcommands": ["disable", "reset"],
+      "examples": {
+        "match": ["ibportstate 12 1 disable", "ibportstate -C mlx5_0 12 1 reset"],
+        "ignore": ["ibportstate 12 1 query", "echo ibportstate 12 1 disable"]
+      }
+    },
+    {
+      "id": "mlxconfig-write",
+      "severity": "high",
+      "reason": "禁止修改或复位网卡固件配置",
+      "command": "mlxconfig",
+      "subcommands": ["set", "s", "reset", "r", "set_raw", "apply"],
+      "examples": {
+        "match": ["mlxconfig -d /dev/mst/mt4123_pciconf0 set SRIOV_EN=1", "mlxconfig -d 03:00.0 -y r"],
+        "ignore": ["mlxconfig -d 03:00.0 q", "mlxconfig -d 03:00.0 query", "echo mlxconfig -d 03:00.0 set SRIOV_EN=1"]
+      }
+    },
+    {
+      "id": "nic-firmware-write",
+      "severity": "high",
+      "reason": "禁止烧写、擦除或改写网卡固件",
+      "command": ["flint", "mstflint"],
+      "subcommands": ["b", "burn", "e", "erase", "sg", "smg", "sv", "wb", "ww", "wbne", "wwne", "swreset", "brom", "drom", "set_key", "hw set"],
+      "examples": {
+        "match": ["flint -d /dev/mst/mt4123_pciconf0 -i fw.bin burn", "mstflint -d 03:00.0 -i fw.bin b"],
+        "ignore": ["flint -d /dev/mst/mt4123_pciconf0 q", "mstflint -d 03:00.0 query", "echo flint -d x burn"]
+      }
+    },
+    {
+      "id": "mlxburn",
+      "severity": "high",
+      "reason": "禁止通过 mlxburn 烧写网卡固件",
+      "command": "mlxburn",
+      "examples": {
+        "match": ["mlxburn -d /dev/mst/mt4123_pciconf0 -i fw.mlx", "ssh gpu1 mlxburn -fw fw.mlx -dev 03:00.0"],
+        "ignore": ["mlxfwmanager --query", "echo mlxburn -d x"]
+      }
+    },
+    {
+      "id": "nic-firmware-reset",
+      "severity": "high",
+      "reason": "禁止复位网卡固件",
+      "command": ["mstfwreset", "mlxfwreset"],
+      "subcommands": ["r", "reset"],
+      "examples": {
+        "match": ["mlxfwreset -d 03:00.0 reset -y", "mstfwreset -d 03:00.0 r"],
+        "ignore": ["mlxfwreset -d 03:00.0 q", "echo mlxfwreset -d 03:00.0 reset"]
+      }
+    },
+    {
+      "id": "opensm-service",
+      "severity": "high",
+      "reason": "禁止启停 OpenSM 子网管理器服务",
+      "command": ["systemctl", "service"],
+      "subcommands": ["start", "stop", "restart", "try-restart", "reload-or-restart", "kill", "disable", "mask"],
+      "pattern": "(^| )opensmd?(\\.service)?( |$)",
+      "examples": {
+        "match": ["systemctl stop opensm", "service opensmd restart"],
+        "ignore": ["systemctl status opensm", "echo systemctl stop opensm"]
+      }
+    },
+    {
+      "id": "opensm-run",
+      "severity": "high",
+      "reason": "禁止直接启动或控制 OpenSM 子网管理器",
+      "command": ["opensm", "opensmd"],
+      "examples": {
+        "match": ["opensm -B", "/etc/init.d/opensmd stop"],
+        "ignore": ["systemctl status opensmd", "echo opensm -B"]
+      }
+    },
+    {
+      "id": "nvidia-smi-reset",
+      "severity": "high",
+      "reason": "禁止复位 GPU",
+      "command": "nvidia-smi",
+      "pattern": "(^| )(-r|--gpu-reset)( |$)",
+      "examples": {
+        "match": ["nvidia-smi -r -i 0", "ssh gpu1 nvidia-smi --gpu-reset -i 1"],
+        "ignore": ["nvidia-smi -q", "nvidia-smi -rgc", "echo nvidia-smi -r"]
+      }
+    },
+    {
+      "id": "nvidia-smi-config",
+      "severity": "medium",
+      "reason": "修改 GPU 持久化、功耗、时钟、ECC、计算模式或 MIG 配置需要确认",
+      "command": "nvidia-smi",
+      "pattern": "(^| )(-pm|--persistence-mode|-pl|--power-limit|-ac|--applications-clocks|-rac|--reset-applications-clocks|-lgc|--lock-gpu-clocks|-rgc|--reset-gpu-clocks|-lmc|--lock-memory-clocks|-rmc|--reset-memory-clocks|--ecc-config|--reset-ecc-errors|--compute-mode|-mig|--multi-instance-gpu|-am|--accounting-mode|-caa|--clear-accounted-apps|--cuda-clocks)(=| |$)",
+      "examples": {
+        "match": ["nvidia-smi -pm 1", "nvidia-smi -i 0 -pl 300", "nvidia-smi --compute-mode=EXCLUSIVE_PROCESS"],
+        "ignore": ["nvidia-smi --query-gpu=name --format=csv", "nvidia-smi -L", "echo nvidia-smi -pm 1"]
+      }
+    },
+    {
+      "id": "mlxlink-write",
+      "severity": "high",
+      "reason": "禁止通过 mlxlink 修改端口状态、速率、FEC 或进入测试模式",
+      "command": "mlxlink",
+      "flags": ["-a", "--port_state", "--speeds", "--fec", "--link_mode_force", "--test_mode", "--pprbs"],
+      "examples": {
+        "match": ["mlxlink -d /dev/mst/mt4123_pciconf0 -a DN", "ssh gpu1 mlxlink -d 03:00.0 --speeds 100G"],
+        "ignore": ["mlxlink -d 03:00.0 -m", "mlxlink -d 03:00.0 -c -e", "echo mlxlink -d 03:00.0 -a DN"]
+      }
+    },
+    {
+      "id": "ufm-service",
+      "severity": "high",
+      "reason": "禁止停止或重启 UFM 服务",
+      "command": ["systemctl", "service"],
+      "subcommands": ["stop", "restart", "try-restart", "reload-or-restart", "kill", "disable", "mask"],
+      "pattern": "(^| )ufm[\\w.@-]*( |$)",
+      "examples": {
+        "match": ["systemctl stop ufm-enterprise", "service ufmd restart"],
+        "ignore": ["systemctl status ufm-enterprise", "echo systemctl stop ufm-enterprise"]
+      }
+    },
+    {
+      "id": "ufmd-control",
+      "severity": "high",
+      "reason": "禁止停止或重启 UFM 服务",
+      "command": "ufmd",
+      "subcommands": ["stop", "restart"],
+      "examples": {
+        "match": ["/etc/init.d/ufmd stop", "ufmd restart"],
+        "ignore": ["ufmd status", "echo ufmd stop"]
+      }
+    },
+    {
+      "id": "ufm-ha-switch",
+      "severity": "high",
+      "reason": "禁止切换或改动 UFM 高可用集群",
+      "command": "ufm_ha_cluster",
+      "pattern": "^\\S+ (?!(status|-h|--help)( |$))",
+      "examples": {
+        "match": ["ufm_ha_cluster failover", "ufm_ha_cluster takeover"],
+        "ignore": ["ufm_ha_cluster status", "echo ufm_ha_cluster failover"]
+      }
+    }
+  ]
+}

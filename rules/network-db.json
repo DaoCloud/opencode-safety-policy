@@ -1,0 +1,125 @@
+{
+  "rules": [
+    {
+      "id": "ip-link-down",
+      "severity": "high",
+      "reason": "禁止关闭网络接口",
+      "command": "ip",
+      "pattern": "(^| )(l|li|lin|link) (s|se|set) (.* )?down( |$)",
+      "examples": {
+        "match": ["ip link set eth0 down", "ip -n ns1 l s dev eth1 down", "ssh leaf1 ip link set swp1 down"],
+        "ignore": ["ip link set eth0 up", "ip link show", "echo ip link set eth0 down"]
+      }
+    },
+    {
+      "id": "ip-flush-delete",
+      "severity": "high",
+      "reason": "禁止清空或删除 IP 地址、路由、邻居与策略路由",
+      "command": "ip",
+      "pattern": "(^| )(a|ad|add|addr|addre|addres|address|r|ro|rou|rout|route|n|ne|nei|neigh|neighbor|neighbour|ru|rul|rule) (f|fl|flu|flus|flush|d|de|del|dele|delet|delete)( |$)",
+      "examples": {
+        "match": ["ip addr flush dev eth0", "ip route del default", "ip -6 r d 2001:db8::/64", "ip rule del pref 100"],
+        "ignore": ["ip addr show", "ip route add 10.0.0.0/8 via 10.0.0.1 dev eth0", "echo ip addr flush dev eth0"]
+      }
+    },
+    {
+      "id": "ifdown",
+      "severity": "high",
+      "reason": "禁止关闭网络接口",
+      "pattern": "^(ifdown|ifconfig .* down)( |$)",
+      "examples": {
+        "match": ["ifdown eth0", "ifconfig eth0 down"],
+        "ignore": ["ifup eth0", "ifconfig eth0", "echo ifdown eth0"]
+      }
+    },
+    {
+      "id": "nmcli-down",
+      "severity": "high",
+      "reason": "禁止断开或删除 NetworkManager 连接",
+      "command": "nmcli",
+      "subcommands": ["delete", "del", "down", "disconnect"],
+      "examples": {
+        "match": ["nmcli connection down eth0", "nmcli con delete office", "nmcli device disconnect eth1"],
+        "ignore": ["nmcli con show", "nmcli device status", "echo nmcli con down eth0"]
+      }
+    },
+    {
+      "id": "iptables-flush",
+      "severity": "high",
+      "reason": "禁止清空防火墙规则或删除规则链",
+      "command": [
+        "iptables",
+        "ip6tables",
+        "iptables-legacy",
+        "ip6tables-legacy",
+        "iptables-nft",
+        "ip6tables-nft",
+        "ebtables",
+        "arptables"
+      ],
+      "flags": ["-F", "--flush", "-X", "--delete-chain"],
+      "examples": {
+        "match": ["iptables -F", "iptables -t nat -X", "ip6tables --flush INPUT"],
+        "ignore": ["iptables -nvL", "iptables -A INPUT -p tcp --dport 22 -j ACCEPT", "echo iptables -F"]
+      }
+    },
+    {
+      "id": "nft-flush",
+      "severity": "high",
+      "reason": "禁止清空或删除 nftables 规则",
+      "command": "nft",
+      "subcommands": ["flush", "delete", "destroy"],
+      "examples": {
+        "match": ["nft flush ruleset", "nft delete table inet filter"],
+        "ignore": ["nft list ruleset", "echo nft flush ruleset"]
+      }
+    },
+    {
+      "id": "rsync-delete",
+      "severity": "high",
+      "reason": "禁止使用会删除目标或源文件的 rsync 选项",
+      "command": "rsync",
+      "flags": [
+        "--delete",
+        "--del",
+        "--delete-before",
+        "--delete-during",
+        "--delete-delay",
+        "--delete-after",
+        "--delete-excluded",
+        "--remove-source-files"
+      ],
+      "examples": {
+        "match": ["rsync -a --delete src/ node1:/data/", "rsync -av --remove-source-files a/ b/"],
+        "ignore": ["rsync -av src/ node1:/data/", "echo rsync --delete a b"]
+      }
+    },
+    {
+      "id": "sql-drop",
+      "severity": "high",
+      "reason": "禁止删除或清空数据库、Schema 与表",
+      "command": ["mysql", "mariadb", "psql", "sqlite3", "clickhouse-client", "clickhouse", "cockroach", "sqlcmd", "duckdb", "mongo", "mongosh"],
+      "pattern": "(?i:\\b(drop\\s+(database|schema|table)\\b|truncate\\s+(table\\s+)?\\w|dropdatabase\\s*\\(|\\.drop\\s*\\())",
+      "examples": {
+        "match": [
+          "mysql -e 'DROP DATABASE app'",
+          "psql -c 'truncate table users'",
+          "sqlite3 app.db 'drop table t'",
+          "mongosh --eval 'db.dropDatabase()'"
+        ],
+        "ignore": ["mysql -e 'SELECT 1'", "psql -c 'select * from drop_log'", "echo 'DROP DATABASE app'"]
+      }
+    },
+    {
+      "id": "redis-flush",
+      "severity": "high",
+      "reason": "禁止清空 Redis 数据",
+      "command": ["redis-cli", "valkey-cli", "keydb-cli"],
+      "pattern": "(?i:(^| )(flushall|flushdb)( |$))",
+      "examples": {
+        "match": ["redis-cli FLUSHALL", "redis-cli -h 10.0.0.1 -n 2 flushdb async"],
+        "ignore": ["redis-cli info", "echo redis-cli FLUSHALL"]
+      }
+    }
+  ]
+}

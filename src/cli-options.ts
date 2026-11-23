@@ -49,6 +49,7 @@ export const OPTION_SPECS = {
     "cluster",
     "context",
     "kubeconfig",
+    "kuberc",
     "log-backtrace-at",
     "log-dir",
     "log-file",

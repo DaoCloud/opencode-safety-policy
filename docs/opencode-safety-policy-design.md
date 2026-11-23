@@ -254,6 +254,8 @@
 - **Linux / K8s / 容器只读**：`ls`、`cat`、`head`、`tail`、`grep`、`rg`、`df`、`du`、`free`、`uptime`、`uname`、`hostname`、`whoami`、`id`、`ps`、`ss`、`ip addr/route/link show`、`systemctl status`、`journalctl`、`dmesg`、`kubectl get/describe/logs/top/cluster-info`、`docker ps/images/logs/inspect`、`crictl ps/pods/logs/inspect`。
 - **Spectrum / Cumulus / IB / GPU / UFM 只读**：`nv show`、`net show`、`nvidia-smi`（不含 `--gpu-reset`/`-r`）、`ibstat`、`ibv_devinfo`、`ibswitches`、`iblinkinfo`、`sminfo`、`mlxlink`、`ipmitool sensor/sdr/fru/sel list/chassis status/power status`，以及发往 Redfish / UFM 的纯 `GET` 查询。
   > 注：`ibdiagnet` 会向 `/var/tmp/ibdiagnet2` 写入大量诊断产物并执行全网扫描，**不放入**无条件只读白名单（默认在 `strict` 下走 `ask`，有需要可在 `sshReadOnlyAllowlist` 中按需显式加入）。
+- 文件格式为 `{ "commands": [ "<命令名> [子命令...]", ... ] }`，条目与 `sshReadOnlyAllowlist` 相同，是命令前缀，例如 `"kubectl get"`、`"ipmitool sel list"`、`"mlxlink"`。
+- 白名单只影响"未知远端命令"的默认 `ask`，不覆盖规则。远端命令命中任何规则时按规则判定，例如 `nvidia-smi -r` 命中 `nvidia-smi-reset`，`mlxlink -a DN` 命中 `mlxlink-write`。
 
 ---
 

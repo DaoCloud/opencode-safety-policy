@@ -1,0 +1,230 @@
+{
+  "rules": [
+    {
+      "id": "k8s-delete-namespace",
+      "severity": "critical",
+      "reason": "禁止删除 Kubernetes 命名空间",
+      "command": "kubectl",
+      "subcommands": ["delete", "del"],
+      "pattern": "(?<!-n|--namespace) (\\S+,)?(ns|namespaces?)([/,]\\S*)?( |$)",
+      "examples": {
+        "match": [
+          "kubectl delete ns prod",
+          "kubectl --context prod delete namespace payments",
+          "kubectl delete namespaces/payments",
+          "ssh master kubectl delete ns,deploy x"
+        ],
+        "ignore": [
+          "kubectl get ns",
+          "kubectl delete pod x -n ns",
+          "kubectl delete pod x --namespace prod",
+          "echo kubectl delete ns prod"
+        ]
+      }
+    },
+    {
+      "id": "k8s-delete-all-namespaces",
+      "severity": "critical",
+      "reason": "禁止跨所有命名空间批量删除 Kubernetes 资源",
+      "command": "kubectl",
+      "subcommands": ["delete", "del"],
+      "flags": ["-A", "--all-namespaces"],
+      "examples": {
+        "match": ["kubectl delete pods --all -A", "kubectl delete deploy -l app=x --all-namespaces"],
+        "ignore": ["kubectl get pods -A", "kubectl delete pod x -n prod", "echo kubectl delete pods -A"]
+      }
+    },
+    {
+      "id": "k8s-delete",
+      "severity": "high",
+      "reason": "禁止删除 Kubernetes 资源",
+      "command": "kubectl",
+      "subcommands": ["delete", "del"],
+      "examples": {
+        "match": [
+          "kubectl delete pod nginx",
+          "kubectl -n prod delete deploy api",
+          "kubectl --kubeconfig /tmp/kc --as admin delete -f app.yaml",
+          "kubectl --kuberc /tmp/kuberc delete pod x",
+          "kubectl exec -it tools -- kubectl delete pod x"
+        ],
+        "ignore": ["kubectl get pods", "kubectl get pod delete", "echo kubectl delete pod nginx"]
+      }
+    },
+    {
+      "id": "k8s-node-disrupt",
+      "severity": "high",
+      "reason": "禁止驱逐或隔离 Kubernetes 节点",
+      "command": "kubectl",
+      "subcommands": ["drain", "cordon", "taint"],
+      "examples": {
+        "match": [
+          "kubectl drain node1 --ignore-daemonsets",
+          "kubectl cordon node1",
+          "kubectl taint nodes node1 key=value:NoSchedule"
+        ],
+        "ignore": ["kubectl uncordon node1", "kubectl describe node drain", "echo kubectl drain node1"]
+      }
+    },
+    {
+      "id": "k8s-replace-force",
+      "severity": "high",
+      "reason": "禁止强制替换 Kubernetes 资源（会先删除再重建）",
+      "command": "kubectl",
+      "subcommands": ["replace"],
+      "flags": ["--force"],
+      "examples": {
+        "match": ["kubectl replace --force -f app.yaml", "kubectl -n prod replace -f app.yaml --force=true"],
+        "ignore": ["kubectl replace -f app.yaml", "echo kubectl replace --force -f app.yaml"]
+      }
+    },
+    {
+      "id": "k8s-rollout-undo",
+      "severity": "high",
+      "reason": "禁止回滚 Kubernetes 工作负载",
+      "command": "kubectl",
+      "subcommands": ["rollout undo"],
+      "examples": {
+        "match": ["kubectl rollout undo deploy/api", "kubectl -n prod rollout undo deployment api --to-revision 2"],
+        "ignore": ["kubectl rollout status deploy/api", "kubectl rollout history deploy/undo", "echo kubectl rollout undo deploy/api"]
+      }
+    },
+    {
+      "id": "k8s-scale-zero",
+      "severity": "high",
+      "reason": "禁止把 Kubernetes 工作负载缩容到 0",
+      "command": "kubectl",
+      "subcommands": ["scale"],
+      "flags": ["--replicas=0"],
+      "examples": {
+        "match": ["kubectl scale --replicas=0 deploy/api", "kubectl -n prod scale deploy api --replicas 0"],
+        "ignore": ["kubectl scale --replicas=3 deploy/api", "kubectl get deploy api", "echo kubectl scale --replicas=0 deploy/api"]
+      }
+    },
+    {
+      "id": "k8s-patch-remove",
+      "severity": "high",
+      "reason": "禁止通过 kubectl patch 删除或清空字段",
+      "command": "kubectl",
+      "subcommands": ["patch"],
+      "pattern": "\"op\" *: *\"remove\"|\"\\$patch\" *: *\"delete\"|: *null *[,}\\]]",
+      "examples": {
+        "match": [
+          "kubectl patch deploy api --type json -p '[{\"op\":\"remove\",\"path\":\"/spec/template/spec/volumes/0\"}]'",
+          "kubectl patch cm app -p '{\"data\":{\"key\":null}}'",
+          "kubectl patch deploy api -p '{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"x\",\"$patch\":\"delete\"}]}}}}'"
+        ],
+        "ignore": [
+          "kubectl patch deploy api -p '{\"spec\":{\"replicas\":2}}'",
+          "echo kubectl patch cm app -p '{\"data\":{\"key\":null}}'"
+        ]
+      }
+    },
+    {
+      "id": "k8s-patch",
+      "severity": "medium",
+      "reason": "kubectl patch 会直接修改线上资源",
+      "command": "kubectl",
+      "subcommands": ["patch"],
+      "examples": {
+        "match": ["kubectl patch deploy api -p '{\"spec\":{\"replicas\":2}}'", "kubectl -n prod patch svc api --type merge -p '{}'"],
+        "ignore": ["kubectl get deploy api -o yaml", "echo kubectl patch deploy api"]
+      }
+    },
+    {
+      "id": "helm-uninstall",
+      "severity": "high",
+      "reason": "禁止卸载 Helm release",
+      "command": "helm",
+      "subcommands": ["uninstall", "delete", "del", "un"],
+      "examples": {
+        "match": ["helm uninstall api", "helm -n prod delete api", "helm --kube-context prod un api --keep-history"],
+        "ignore": ["helm list -A", "helm status api", "echo helm uninstall api"]
+      }
+    },
+    {
+      "id": "etcdctl-del",
+      "severity": "critical",
+      "reason": "禁止直接删除 etcd 中的键",
+      "command": "etcdctl",
+      "subcommands": ["del"],
+      "examples": {
+        "match": ["etcdctl del /registry/pods/default/x", "ETCDCTL_API=3 etcdctl --endpoints https://127.0.0.1:2379 del /registry --prefix"],
+        "ignore": ["etcdctl get /registry --prefix --keys-only", "etcdctl endpoint health", "echo etcdctl del /registry"]
+      }
+    },
+    {
+      "id": "velero-delete",
+      "severity": "high",
+      "reason": "禁止删除 Velero 备份、恢复或计划",
+      "command": "velero",
+      "subcommands": ["delete"],
+      "examples": {
+        "match": ["velero backup delete nightly-20240101", "velero delete backup nightly --confirm", "velero -n velero schedule delete daily"],
+        "ignore": ["velero backup get", "velero backup describe nightly", "echo velero backup delete nightly"]
+      }
+    },
+    {
+      "id": "container-destroy",
+      "severity": "high",
+      "reason": "禁止停止或删除容器、镜像、卷与网络",
+      "command": ["docker", "nerdctl", "podman"],
+      "subcommands": [
+        "rm",
+        "rmi",
+        "stop",
+        "kill",
+        "container rm",
+        "container stop",
+        "container kill",
+        "container prune",
+        "image rm",
+        "image prune",
+        "volume rm",
+        "volume prune",
+        "network rm",
+        "network prune",
+        "system prune",
+        "builder prune",
+        "compose down",
+        "compose rm",
+        "compose stop",
+        "compose kill",
+        "service rm",
+        "stack rm",
+        "pod rm",
+        "pod stop",
+        "pod kill",
+        "pod prune"
+      ],
+      "examples": {
+        "match": [
+          "docker rm -f app",
+          "docker -H tcp://10.0.0.1:2375 stop app",
+          "docker container prune -f",
+          "docker compose -f prod.yml down -v",
+          "podman pod rm -f web",
+          "nerdctl -n k8s.io rmi nginx"
+        ],
+        "ignore": [
+          "docker ps -a",
+          "docker run --rm --name stop alpine true",
+          "docker compose up -d",
+          "docker logs app",
+          "echo docker rm -f app"
+        ]
+      }
+    },
+    {
+      "id": "cri-destroy",
+      "severity": "high",
+      "reason": "禁止通过 CRI 工具停止或删除容器、Pod 与镜像",
+      "command": ["crictl", "ctr"],
+      "subcommands": ["rm", "rmi", "rmp", "stop", "stopp", "kill", "delete", "del", "remove"],
+      "examples": {
+        "match": ["crictl rmp -f 3f2a", "crictl stop 3f2a", "ctr -n k8s.io containers rm x", "ctr -n k8s.io tasks kill x"],
+        "ignore": ["crictl ps -a", "crictl pods", "ctr -n k8s.io images ls", "echo crictl rmp 3f2a"]
+      }
+    }
+  ]
+}

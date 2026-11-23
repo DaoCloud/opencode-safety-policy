@@ -1,0 +1,89 @@
+{
+  "rules": [
+    {
+      "id": "nvue-apply",
+      "severity": "high",
+      "reason": "禁止应用、替换或回退 NVUE 配置，以及执行 NVUE 重启、复位、安装与升级动作",
+      "command": "nv",
+      "subcommands": [
+        "config apply",
+        "config replace",
+        "config detach",
+        "action reboot",
+        "action reset",
+        "action install",
+        "action upgrade"
+      ],
+      "examples": {
+        "match": ["nv config apply -y", "ssh leaf1 'nv config apply --assume-yes'", "nv action reboot system"],
+        "ignore": ["nv show interface", "nv config diff", "echo nv config apply"]
+      }
+    },
+    {
+      "id": "nvue-stage",
+      "severity": "medium",
+      "reason": "暂存 NVUE 配置变更需要确认",
+      "command": "nv",
+      "subcommands": ["set", "unset", "config patch"],
+      "examples": {
+        "match": ["nv set interface swp1 link state down", "ssh leaf1 nv unset vrf red"],
+        "ignore": ["nv show vrf", "echo nv set interface swp1"]
+      }
+    },
+    {
+      "id": "nclu-commit",
+      "severity": "high",
+      "reason": "禁止提交 NCLU 配置",
+      "command": "net",
+      "subcommands": ["commit"],
+      "examples": {
+        "match": ["net commit", "ssh leaf1 net commit"],
+        "ignore": ["net show interface", "net pending", "echo net commit"]
+      }
+    },
+    {
+      "id": "nclu-stage",
+      "severity": "medium",
+      "reason": "暂存或丢弃 NCLU 配置变更需要确认",
+      "command": "net",
+      "subcommands": ["add", "del", "abort"],
+      "examples": {
+        "match": ["net add interface swp1 ip address 10.0.0.1/24", "ssh leaf1 net del bgp neighbor swp51"],
+        "ignore": ["net show bgp summary", "echo net add interface swp1"]
+      }
+    },
+    {
+      "id": "ifreload-all",
+      "severity": "high",
+      "reason": "禁止重载全部网络接口配置",
+      "command": "ifreload",
+      "flags": ["-a", "--all"],
+      "examples": {
+        "match": ["ifreload -a", "ssh leaf1 sudo ifreload -av"],
+        "ignore": ["ifquery -a", "ifreload --help", "echo ifreload -a"]
+      }
+    },
+    {
+      "id": "switchd-restart",
+      "severity": "high",
+      "reason": "禁止停止或重启交换机转发服务 switchd",
+      "command": ["systemctl", "service"],
+      "subcommands": ["stop", "restart", "try-restart", "reload-or-restart", "kill", "disable", "mask"],
+      "pattern": "(^| )switchd(\\.service)?( |$)",
+      "examples": {
+        "match": ["systemctl restart switchd", "ssh leaf1 sudo systemctl restart switchd.service", "service switchd stop"],
+        "ignore": ["systemctl status switchd", "systemctl restart nginx", "echo systemctl restart switchd"]
+      }
+    },
+    {
+      "id": "onie-select",
+      "severity": "critical",
+      "reason": "禁止通过 onie-select 重装或卸载交换机操作系统",
+      "command": "onie-select",
+      "examples": {
+        "match": ["onie-select -i", "ssh leaf1 sudo onie-select -rf"],
+        "ignore": ["echo onie-select -i", "cat onie-select.log"]
+      }
+    }
+  ]
+}
