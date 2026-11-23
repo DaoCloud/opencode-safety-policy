@@ -237,10 +237,13 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### P0-10 evaluate Hook 与基础自保护
 
 - 设计：2、4.2 最后一行（防自篡改）、5.1 注释
-- 产出：`src/hooks/permission.ts`、`src/rules/self-protect.ts`（基础版），`test/plugin.test.ts` 补充用例
+- 产出：`src/hooks/permission.ts`、`src/rules/self-protect.ts`（基础版），扩展 `src/analyzer.ts`、`src/policy.ts`，`test/self-protect.test.ts`，`test/plugin.test.ts` 补充用例
 - 要点：
-  - `action: "shell"`：已是 `deny` 的不改。直调时按 `source.id` 命中标记；Code Mode 嵌套时按 `sessionID` 加“resources 是标记命令的子串”命中。命中后设 `effect = "ask"`，并写入 `message`。
-  - `edit` / `external_directory` / `read`：resources 规范化后，命中设计 4.2 中的受保护路径（插件目录、`/etc/opencode/`、`~/.config/opencode/opencode.json`、`.opencode/`、`rulesFile` 等）时 `deny`。受 `alwaysProtectSelf` 控制。
+  - `action: "shell"`：已是 `deny` 的不改。直调时按 `source.id` 命中标记；Code Mode 嵌套时按 `sessionID` 加“resources 都是标记命令的子串”命中。命中后设 `effect = "ask"`，并写入 `message`。带 `metadata.safetyPolicy` 的插件自发请求同样锁定 `ask`。
+  - `edit`：resources 规范化后命中受保护路径时 `deny`。`read`、`external_directory` 不做自保护（读取限制见 P2-1）。
+  - shell 自保护：本机原子命令的输出重定向目标、参数或工作目录落在受保护路径内，且命令不在只读白名单时 `deny`（`self-protect`）；`rm`/`rmdir`/`mv` 作用于固定受保护路径的上级目录时同样 `deny`。
+  - 受保护路径：插件包目录、`/etc/opencode/`（macOS 为 `/Library/Application Support/opencode/`）、`OPENCODE_CONFIG_DIR`（默认 `~/.config/opencode/`）、`OPENCODE_CONFIG`、任意 `opencode.json`/`opencode.jsonc` 与 `.opencode/`（豁免 `~/.opencode/plan/`）、`rulesFile`。
+  - 自保护在 `strict`/`relaxed` 下总是生效，`off` 模式下受 `alwaysProtectSelf`（默认 `true`）控制。
   - 测试覆盖：模拟 saved 规则已给出 `allow`，evaluate 仍把被标记的命令改成 `ask`。
 - 验证：`bun test test/plugin.test.ts`
 - commit：`feat: add permission evaluate hook`
