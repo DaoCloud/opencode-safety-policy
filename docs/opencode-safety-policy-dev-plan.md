@@ -55,10 +55,15 @@
 | 参考源码（只读） | `/ai-workspace/weizhoublue/git/opencode`（HEAD `22377659`） |
 | API 用法参考 | 插件结构：`packages/plugins/figma/`；`Rpc.define` 写法：`packages/core/test/plugin/module.test.ts`（该用例用的是 Effect API，本插件改用 Promise API 和 JSON Schema） |
 
-**E2E 隔离环境**（具体变量由 Spike S2 确认后回填本节）：
+**E2E 隔离环境**（S2 已验证）：
 
-- 测试项目目录 `/tmp/ocsp-e2e/project`，在该目录的 `opencode.json` 中用本地目录路径注册本仓库。
-- 候选隔离变量：`OPENCODE_CONFIG_DIR`（全局配置目录）、`OPENCODE_DB`（数据库文件）、`XDG_STATE_HOME`（service 注册信息）。
+- 隔离变量：`XDG_CONFIG_HOME`、`XDG_DATA_HOME`、`XDG_STATE_HOME`、`XDG_CACHE_HOME` 指向 `/tmp/ocsp-e2e/xdg/{config,data,state,cache}`。运行任何 `opencode` 命令（包括 `--help`）前都先导出这 4 个变量，否则会写个人目录下的日志。
+- 测试项目目录 `/tmp/ocsp-e2e/project`，在该目录的 `opencode.json` 中用本地目录路径注册本仓库，`model` 指向 mock provider。
+- 模型：本地 mock LLM（OpenAI 兼容，`providers.mock` 用 `@opencode/ai/providers/openai-compatible`，`baseURL` 指向本机端口），把用户消息中的 `@@CALL <tool> <json>` 依次转成工具调用，不需要真实模型凭据。实现见 Spike 产物 `/tmp/ocsp-spike/mock-llm.ts`。
+- 驱动方式：
+  - `opencode run --standalone '<消息>'`：非交互，审批自动拒绝，适合验证 deny 与“弹出审批”。
+  - `opencode serve --hostname 127.0.0.1 --port <p>` + HTTP API（Basic 认证，用户名 `opencode`，密码见启动日志）：`GET /api/session/:id/permission` 查询审批，`POST /api/session/:id/permission/:requestID/reply` 回复 `once`/`always`/`reject`，`POST /api/rpc/:rpcID/:method` 调用插件 RPC。
+  - TUI：`opencode --standalone <dir>`，用 pty + `pyte` 驱动或手测。
 - 不修改 `/etc/opencode` 和个人 `~/.config/opencode`（本机为共享环境）。系统级部署放到 R-2，在容器或 VM 中验证。
 - Code Mode 嵌套调用 shell 需要 `OPENCODE_FLAGS=full_codemode`。该 flag 只能显式开启，也可以在配置里写 `experimental.full_codemode: true`。
 
@@ -211,7 +216,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - 设计：2（架构图与分工表）、1.2
 - 产出：`src/hooks/tool.ts`、`test/helpers/fake-context.ts`、`test/plugin.test.ts`
 - 要点：
-  - `shell`：调用 analyze。`deny` 时抛 `Error("[safety-policy:<id>] <reason>")`。`ask` 时登记标记 `{ sessionID, callID, command, ruleId, reason, expiresAt }`，存储方式按 S6 的结论。
+  - `shell`：调用 analyze。`deny` 时抛 `Error("[safety-policy:<id>] <reason>")`。`ask` 时登记标记 `{ sessionID, callID, command, ruleId, reason, expiresAt }`，放在模块级 `Map`（S6 已验证同一实例）。
   - `opencode_worktree_remove`：`force: true` 在 `strict` 下 `deny`。
   - MCP 工具：`deny` 时抛错。`ask` 时插件自行调用 `ctx.permission.assert({ action: "shell", resources, metadata: { safetyPolicy } })`，不传 `save` 和 `source`。
   - `execute.after`：清理该 callID 的标记。
@@ -250,7 +255,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 
 ### P0-E2E
 
-在隔离环境中逐项手测，失败项先修复（`fix:` commit）再重测。
+在隔离环境中用 mock LLM 逐项验证（驱动方式见第 4 节，TUI 项用 pty 驱动或手测），失败项先修复（`fix:` commit）再重测。
 
 - [ ] 本机 `rm -rf /data`、`shell({ workdir: "/", command: "rm -rf etc" })`、`kubectl delete`、`docker stop`、`opencode_worktree_remove(force: true)` 被拦截
 - [ ] `/tmp` 下的常规 `rm` 只弹一次内置审批，直调和 `full_codemode` 两种场景都要测
@@ -411,8 +416,8 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 
 ## 13. 进度清单
 
-- [ ] D0 文档入库
-- [ ] S Spike（S1–S9）
+- [x] D0 文档入库
+- [x] S Spike（S1–S9）
 - [ ] P0-1 包脚手架
 - [ ] P0-2 Tokenizer
 - [ ] P0-3 Unwrapper
