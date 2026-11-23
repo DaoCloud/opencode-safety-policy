@@ -285,8 +285,8 @@
 - **数据结构**：
   ```json
   {
-    "mode": "strict",
-    "expiresAt": null,
+    "mode": "relaxed",
+    "expiresAt": 1763881800000,
     "previousMode": "strict",
     "updatedAt": 1763880000000,
     "updatedBy": "command"
@@ -298,6 +298,9 @@
   3. **环境变量默认覆盖**：`OPENCODE_SAFETY_MODE=strict|relaxed|off`
   4. **配置文件 `opencode.json` 中的 `plugins[].options.mode`**（修改 `options` 会变更插件 `revision` 触发整插件重载；`rulesFile` 由插件在每次加载前按文件 `mtime` 按需刷新）
   5. **内置默认值**：`strict`
+- **TTL 回落**：`expiresAt` 为 `null` 表示不过期。过期后恢复到 `previousMode`；`previousMode` 为 `null` 时按下一优先级（环境变量 → 配置 → `strict`）。不带 TTL 切换时 `previousMode` 为 `null`。带 TTL 切换时，若当前状态不带 TTL，`previousMode` 取当前模式；若当前状态也带 TTL，则继承它的 `previousMode`，避免临时模式在叠加切换后变成永久模式。
+- **容错**：环境变量取值非法时按 `strict` 处理（`LOCK_MODE` 非法即锁定为 `strict`）；`ctx.storage` 读取失败时按 `strict` 处理；`safety:state` 内容非法时视为不存在。
+- **`rulesFile`**：须为绝对路径数组，文件格式与内置规则相同。按 `mtime`、大小和 inode 判断变更后重新加载。文件缺失、JSON 非法、规则非法或 `id` 与其他规则重复时，每次决策都会报错，由 hook 层按失败关闭处理，直到文件修复。
 
 ### 5.3 用户专属 `/safety` 交互与零副作用回显机制
 

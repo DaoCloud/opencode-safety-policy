@@ -194,14 +194,15 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### P0-7 配置与模式状态
 
 - 设计：5.1、5.2、7
-- 产出：`src/config.ts`、`src/state.ts`、`test/mode.test.ts`
+- 产出：`src/config.ts`、`src/state.ts`、`test/mode.test.ts`、`test/config.test.ts`
 - 要点：
   - 解析并校验 `options`。`rulesFile` 按 mtime 按需刷新。
   - 模式优先级：`OPENCODE_SAFETY_LOCK_MODE` > storage 中的 `safety:state`（含 TTL）> `OPENCODE_SAFETY_MODE` > `options.mode` > `strict`。
-  - `state.ts` 只依赖 storage 接口（`get`/`set`/`remove`）。每次决策时读取，可加秒级缓存。TTL 在读取时判断，过期后回落。
+  - `state.ts` 只依赖 storage 接口（`get`/`set`）。每次决策时读取，可加秒级缓存。TTL 在读取时判断，过期后回落。
   - LOCK 生效时，`setMode` 抛错。
-  - `mode.test.ts` 覆盖 `severity × mode` 决策矩阵、注入时钟后的 TTL 回落和 LOCK 优先级。
-- 验证：`bun test test/mode.test.ts`
+  - `mode.test.ts` 覆盖注入时钟后的 TTL 回落、叠加 TTL 和 LOCK 优先级。`severity × mode` 决策矩阵已在 `rules.test.ts` 覆盖。
+  - `config.test.ts` 覆盖 options 校验和 `rulesFile` 刷新、报错。
+- 验证：`bun test test/mode.test.ts test/config.test.ts`
 - commit：`feat: add mode state with ttl and lock`
 
 ### P0-8 Analyzer（P0 版）与 SSH 策略
@@ -227,6 +228,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
   - `opencode_worktree_remove`：`force: true` 在 `strict` 下 `deny`。
   - MCP 工具：`deny` 时抛错。`ask` 时插件自行调用 `ctx.permission.assert({ action: "shell", resources, metadata: { safetyPolicy } })`，不传 `save` 和 `source`。
   - `execute.after`：清理该 callID 的标记。
+  - 失败关闭：`parseOptions`、`RuleProvider.get()` 或 analyze 抛错时，`setup` 不能抛出（否则插件不加载，命令无防护），而是照常注册 hook，对 `shell` 按 `deny` 处理，reason 带上错误信息。
   - `fake-context.ts`：记录 hook 回调，用 `Map` 模拟 storage，记录 `permission.assert` 调用，不依赖 OpenCode 运行时。
 - 验证：`bun test test/plugin.test.ts`
 - commit：`feat: add tool execute.before guard`
@@ -431,7 +433,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [x] P0-4 路径规范化
 - [x] P0-5 规则引擎
 - [x] P0-6 内置规则
-- [ ] P0-7 配置与模式状态
+- [x] P0-7 配置与模式状态
 - [ ] P0-8 Analyzer 与 SSH 策略
 - [ ] P0-9 execute.before Hook
 - [ ] P0-10 evaluate Hook 与基础自保护
