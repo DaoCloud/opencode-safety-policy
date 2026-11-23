@@ -222,6 +222,20 @@
 - 支持 `command + subcommands + flags` 结构化匹配（先对命令名执行 `basename`/去反斜杠归一化，再按对应 CLI 的带值选项表跳过如 `kubectl --kubeconfig /path -n prod --as admin` 等前置参数），也支持 `pattern` 正则匹配与 `http`（`methods` + `urlPatterns` + `bodyPatterns`）匹配。
 - 每条规则带 `severity`（`"critical" | "high" | "medium"`），分别控制在不同模式下的默认处置（`critical`/`high` 在 `strict` 下默认 `deny`，`medium` 在 `strict` 下默认 `ask`，避免高误报倒逼用户关闭插件）。
 - 每条规则自带 `examples.match` / `examples.ignore`，单元测试自动遍历全量 JSON 规则执行回归验证，人工加完规则跑一次 `bun test` 即可确认无误报、无漏报。
+- 规则文件格式为 `{ "rules": [ <规则>, ... ] }`。扫描内置目录时，没有 `rules` 字段的文件（如 `ssh-readonly.json`）会被跳过。规则含未知字段、非法 `severity`、无法编译的正则或重复 `id` 时，加载直接报错，并指明来源文件和 `id`。
+- 匹配语义（同一条规则的各部分须同时满足）：
+  - `command` 可以是字符串或数组，与归一化后的命令名比较。
+  - `subcommands` 中任一项命中即可，多词项（如 `"delete namespace"`）的后续词按顺序出现即可，不要求相邻。对有带值选项表的 CLI（`kubectl`、`docker`），首词必须是第一个位置参数。其他 CLI 的首词可以出现在任意位置参数上，避免未知的带值选项（如 `helm -n prod uninstall`）遮住子命令。
+  - `flags` 中任一项命中即可。`-f` 也匹配短选项簇（如 `-rf`），`--force` 也匹配 `--force=…`，`--replicas=0` 也匹配 `--replicas 0`。`--` 之后的参数不参与匹配。
+  - `pattern` 作用于 `命令名 参数1 参数2 …`。本机路径参数已展开为绝对路径。
+  - `scope` 为 `local` / `remote` 时，只匹配本机或远端原子命令。
+- 内联规则按原子命令逐条判定，优先级如下：
+  1. `off` 模式全部放行（防自篡改单独处理）；
+  2. 命中 `extraDeny` 或 `critical` 规则：`deny`；
+  3. 命中 `extraAllow`：该原子命令放行，豁免 `high` / `medium` 规则和 `extraAsk`，但不能豁免 `critical`、`extraDeny` 和防自篡改；
+  4. 其余取 `extraAsk`（`ask`）与 5.1 矩阵结果中的最严者。
+  
+  内联规则可省略 `severity` 和 `reason`。各原子命令的结果按 `deny > ask > allow` 聚合。
 
 ### 4.2 规则分类明细
 

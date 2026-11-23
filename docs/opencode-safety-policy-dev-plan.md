@@ -165,15 +165,17 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### P0-5 规则引擎
 
 - 设计：4、4.1、5.1
-- 产出：`src/rules/loader.ts`、`src/rules/matcher.ts`、`src/rules/index.ts`、`test/rules-examples.test.ts`
+- 产出：`src/rules/loader.ts`、`src/rules/matcher.ts`、`src/rules/index.ts`、`test/rules-examples.test.ts`、`test/rules.test.ts`
 - 要点：
-  - 手写规则校验：`id` 唯一，`severity` 取值合法，`command` 和 `pattern` 至少有一个。非法规则在加载时报错，指明文件和 `id`。
+  - 规则文件格式为 `{ "rules": [...] }`，匹配语义见设计 4.1。
+  - 手写规则校验：`id` 唯一，`severity` 取值合法，不允许未知字段，正则必须可编译，`command`、`pattern`、`http` 至少有一个。非法规则在加载时报错，指明文件和 `id`。
+  - `extraAllow` 只豁免 `high` / `medium` 和 `extraAsk`，不能豁免 `critical` 和 `extraDeny`（设计 4.1）。
   - loader 按 `import.meta.dir` 扫描 `rules/` 目录，新增 JSON 文件不用改代码。同时合并 `rulesFile`、`extraDeny`、`extraAsk`、`extraAllow`。
   - `command + subcommands + flags` 匹配时跳过带值的全局参数；`pattern` 预编译。
   - 按 5.1 矩阵把 `severity × mode` 映射为决策，聚合顺序为 `deny > ask > allow`。
   - `http` 匹配在 P1-3 实现。
   - `rules-examples.test.ts` 自动遍历所有规则的 `examples`：`match` 必须命中该规则 `id`，`ignore` 不得命中。本 Step 先用测试内的 fixture 规则验证。
-- 验证：`bun test test/rules-examples.test.ts`
+- 验证：`bun test test/rules-examples.test.ts test/rules.test.ts`
 - commit：`feat: add declarative rule engine`
 
 ### P0-6 内置规则
@@ -182,6 +184,8 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - 产出：`rules/cloud-native.json`、`linux-host.json`、`network-db.json`、`spectrum-cumulus.json`、`ib-ufm.json`（CLI 部分）、`oob-redfish.json`（CLI 部分）、`ssh-readonly.json`
 - 要点：
   - 每条规则至少 2 个 `match` 和 2 个 `ignore`，`ignore` 要包含字面量误报样例，如 `echo kubectl delete`。
+  - 有 `subcommands` 规则且带值全局选项会遮住子命令的 CLI，在 `src/cli-options.ts` 补带值选项表，并登记到 `src/rules/matcher.ts` 的 `COMMAND_SPECS`。
+  - `rules-examples.test.ts` 改为同时遍历内置 `rules/` 目录，`package.json` 的 `files` 加入 `rules`。
   - HTTP 规则在 P1-3 补充。
   - 可以按文件拆成多个 commit。
 - 验证：`bun test test/rules-examples.test.ts`
@@ -422,7 +426,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [x] P0-2 Tokenizer
 - [x] P0-3 Unwrapper
 - [x] P0-4 路径规范化
-- [ ] P0-5 规则引擎
+- [x] P0-5 规则引擎
 - [ ] P0-6 内置规则
 - [ ] P0-7 配置与模式状态
 - [ ] P0-8 Analyzer 与 SSH 策略

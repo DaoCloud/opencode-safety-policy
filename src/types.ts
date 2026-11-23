@@ -22,9 +22,13 @@ export interface Rule {
   id: string
   severity: Severity
   reason: string
-  command?: string
+  /** Command name(s) after basename normalization, e.g. `["docker", "nerdctl", "podman"]`. */
+  command?: string | string[]
+  /** Any of these must match the positionals; multi-word entries such as `"config apply"` are allowed (design 4.1). */
   subcommands?: string[]
+  /** Any of these must be present (`-f` also matches inside `-rf`). */
   flags?: string[]
+  /** Regex tested against the command line `name arg1 arg2 ...`. */
   pattern?: string
   http?: HttpMatch
   scope?: RuleScope
