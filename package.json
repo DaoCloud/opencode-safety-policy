@@ -1,0 +1,27 @@
+{
+  "name": "@daocloud/opencode-safety-policy",
+  "version": "0.1.0",
+  "description": "Safety policy plugin for OpenCode to guard local and remote SSH destructive commands",
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./server": "./index.ts"
+  },
+  "files": [
+    "index.ts",
+    "src"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@opencode/plugin": "^2.3.0"
+  },
+  "devDependencies": {
+    "@opencode/plugin": "2.3.2",
+    "@tsconfig/bun": "1.0.12",
+    "@types/bun": "1.4.5",
+    "typescript": "7.0.2"
+  }
+}
