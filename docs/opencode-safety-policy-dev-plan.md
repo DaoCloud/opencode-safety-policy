@@ -237,7 +237,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### P0-10 evaluate Hook 与基础自保护
 
 - 设计：2、4.2 最后一行（防自篡改）、5.1 注释
-- 产出：`src/hooks/permission.ts`、`src/rules/self-protect.ts`（基础版），扩展 `src/analyzer.ts`、`src/policy.ts`，`test/self-protect.test.ts`，`test/plugin.test.ts` 补充用例
+- 产出：`src/hooks/permission.ts`、`src/rules/self-protect.ts`（基础版），扩展 `src/analyzer.ts`、`src/policy.ts`、`src/unwrapper.ts`（`Atom.localCommands`），`test/self-protect.test.ts`，`test/plugin.test.ts` 补充用例
 - 要点：
   - `action: "shell"`：已是 `deny` 的不改。直调时按 `source.id` 命中标记；Code Mode 嵌套时按 `sessionID` 加“resources 都是标记命令的子串”命中。命中后设 `effect = "ask"`，并写入 `message`。带 `metadata.safetyPolicy` 的插件自发请求同样锁定 `ask`。
   - `edit`：resources 规范化后命中受保护路径时 `deny`。`read`、`external_directory` 不做自保护（读取限制见 P2-1）。
@@ -245,7 +245,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
   - 受保护路径：插件包目录、`/etc/opencode/`（macOS 为 `/Library/Application Support/opencode/`）、`OPENCODE_CONFIG_DIR`（默认 `~/.config/opencode/`）、`OPENCODE_CONFIG`、任意 `opencode.json`/`opencode.jsonc` 与 `.opencode/`（豁免 `~/.opencode/plan/`）、`rulesFile`。
   - 自保护在 `strict`/`relaxed` 下总是生效，`off` 模式下受 `alwaysProtectSelf`（默认 `true`）控制。
   - 测试覆盖：模拟 saved 规则已给出 `allow`，evaluate 仍把被标记的命令改成 `ask`。
-- 验证：`bun test test/plugin.test.ts`
+- 验证：`bun test test/self-protect.test.ts test/plugin.test.ts`
 - commit：`feat: add permission evaluate hook`
 
 ### P0-11 Server 入口与 RPC
@@ -441,7 +441,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [x] P0-7 配置与模式状态
 - [x] P0-8 Analyzer 与 SSH 策略
 - [x] P0-9 execute.before Hook
-- [ ] P0-10 evaluate Hook 与基础自保护
+- [x] P0-10 evaluate Hook 与基础自保护
 - [ ] P0-11 Server 入口与 RPC
 - [ ] P0-12 TUI 入口
 - [ ] P0-E2E

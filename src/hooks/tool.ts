@@ -5,11 +5,12 @@
  * marked, and the `evaluate` hook forces the built-in shell prompt for it, so the user sees one prompt. Other tools
  * that need approval are prompted here with `permission.assert`, without `save` so `Always` cannot store a rule, and
  * without `source` so the TUI lists the resources. Tool calls are matched as `[tool ID, JSON input]` (design 4.1).
+ * In `off` mode only shell self-protection applies (design 4.2).
  */
 
 import type { Plugin } from "@opencode/plugin"
 import { analyze } from "../analyzer"
-import type { Policy } from "../policy"
+import { active, type Policy } from "../policy"
 import { decide, type Verdict } from "../rules"
 
 type Context = Plugin.Context
@@ -39,6 +40,7 @@ export interface Marker {
 export interface Markers {
   add(marker: Omit<Marker, "expiresAt">): void
   get(sessionID: string, callID: string): Marker | undefined
+  list(sessionID: string): Marker[]
   delete(sessionID: string, callID: string): void
 }
 
@@ -59,6 +61,10 @@ export function createMarkers(now: () => number = Date.now, ttlMs = MARKER_TTL_M
       prune()
       return markers.get(key(sessionID, callID))
     },
+    list(sessionID) {
+      prune()
+      return [...markers.values()].filter((marker) => marker.sessionID === sessionID)
+    },
     delete(sessionID, callID) {
       markers.delete(key(sessionID, callID))
     },
@@ -68,7 +74,6 @@ export function createMarkers(now: () => number = Date.now, ttlMs = MARKER_TTL_M
 export interface ToolHookDeps {
   policy: Policy
   markers: Markers
-  home?: string
 }
 
 export function registerToolHooks(ctx: Pick<Context, "tool" | "permission" | "location">, deps: ToolHookDeps): Promise<Registration[]> {
@@ -79,14 +84,14 @@ export function registerToolHooks(ctx: Pick<Context, "tool" | "permission" | "lo
 }
 
 async function before(ctx: Pick<Context, "permission" | "location">, deps: ToolHookDeps, event: BeforeEvent) {
-  const { mode } = await deps.policy.mode.resolve()
-  if (mode === "off") return
-  let loaded
+  let state
   try {
-    loaded = deps.policy.load()
+    state = await active(deps.policy)
   } catch (error) {
     throw blocked("config-error", describe(error))
   }
+  if (!state) return
+  const { mode, loaded } = state
 
   const shell = event.tool === "shell" ? shellInput(event.input) : undefined
   if (event.tool === "shell" && !shell) return
@@ -94,7 +99,15 @@ async function before(ctx: Pick<Context, "permission" | "location">, deps: ToolH
   let verdict: Verdict
   try {
     verdict = shell
-      ? analyze({ ...shell, locationDirectory: ctx.location.directory, mode, rules: loaded.rules, readOnly: loaded.readOnly, home: deps.home })
+      ? analyze({
+          ...shell,
+          locationDirectory: ctx.location.directory,
+          mode,
+          rules: loaded.rules,
+          readOnly: loaded.readOnly,
+          home: deps.policy.home,
+          protect: loaded.protect,
+        })
       : decide({ argv: [event.tool, json], isRemote: false, tool: true }, loaded.rules, mode)
   } catch (error) {
     throw blocked("policy-error", describe(error))
@@ -123,7 +136,7 @@ function shellInput(input: unknown): { command: string; workdir?: string } | und
   return typeof workdir === "string" ? { command, workdir } : { command }
 }
 
-function label(ruleId = "unknown", reason = ""): string {
+export function label(ruleId = "unknown", reason = ""): string {
   return `[safety-policy:${ruleId}] ${reason}`
 }
 
@@ -131,7 +144,7 @@ function blocked(ruleId?: string, reason?: string): Error {
   return new Error(label(ruleId, reason))
 }
 
-function describe(error: unknown): string {
+export function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 

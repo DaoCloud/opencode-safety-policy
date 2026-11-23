@@ -9,7 +9,7 @@
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import { OPTION_SPECS, type OptionSpec } from "../cli-options"
-import { normalizeName, type Command } from "../tokenizer"
+import { normalizeName, type Command, type Redirect } from "../tokenizer"
 import { BUILTIN_RULES_DIR, RuleError } from "./loader"
 import { NO_OPTIONS, positionals } from "./matcher"
 
@@ -54,11 +54,13 @@ export function isReadOnly(argv: string[], list: ReadOnlyList): boolean {
   return entries.some((entry) => entry.every((word, i) => words[i] === word))
 }
 
-/** True when a redirect writes a file; `/dev/null`, `/dev/stdout`, `/dev/stderr` and fd duplication (`2>&1`) do not count. */
 export function writesFile(command: Command): boolean {
-  return command.redirects.some((redirect) => {
-    if (!redirect.op.includes(">")) return false
-    if (HARMLESS_TARGETS.has(redirect.target)) return false
-    return !(redirect.op === ">&" && /^(\d+|-)$/.test(redirect.target))
-  })
+  return command.redirects.some(isFileWrite)
+}
+
+/** True when a redirect writes a file; `/dev/null`, `/dev/stdout`, `/dev/stderr` and fd duplication (`2>&1`) do not count. */
+export function isFileWrite(redirect: Redirect): boolean {
+  if (!redirect.op.includes(">")) return false
+  if (HARMLESS_TARGETS.has(redirect.target)) return false
+  return !(redirect.op === ">&" && /^(\d+|-)$/.test(redirect.target))
 }

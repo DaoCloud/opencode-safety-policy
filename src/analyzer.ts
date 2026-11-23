@@ -2,6 +2,8 @@
  * Command analyzer (design 3.1, 3.2, 4.3, 5.1).
  *
  * Tokenizes and unwraps a `shell` command, then judges every atom:
+ * - with `protect`, an atom that may modify the plugin or the OpenCode configuration is denied in every mode, `off`
+ *   included (design 4.2), unless a rule already denies it;
  * - opaque scripts and dynamic command names (`$CMD`, `r[m]`) are denied in `strict` and asked in `relaxed`;
  * - local atoms are matched after path expansion against every working directory they may run in. The start is
  *   `workdir` resolved against the session directory; `cd` / `pushd` and wrapper directory changes (`env -C`,
@@ -17,6 +19,7 @@ import os from "node:os"
 import { effectiveCwd, expandPathArgs, resolveCanonicalPath } from "./path-util"
 import { ALLOW, combine, decide, type RuleSet, type Verdict } from "./rules"
 import type { MatchInput } from "./rules/matcher"
+import { protectedTarget, selfProtectVerdict, type ProtectedPaths } from "./rules/self-protect"
 import { isReadOnly, writesFile, type ReadOnlyList } from "./rules/ssh-policy"
 import { isDynamicName, tokenize, type OpaqueReason } from "./tokenizer"
 import type { Decision, Mode } from "./types"
@@ -31,6 +34,7 @@ export interface AnalyzeInput {
   rules: RuleSet
   readOnly: ReadOnlyList
   home?: string
+  protect?: ProtectedPaths
 }
 
 export interface AtomReport {
@@ -77,8 +81,9 @@ const OPAQUE_TEXT: Record<OpaqueReason, string> = {
 export function analyze(input: AnalyzeInput): Analysis {
   const home = input.home ?? os.homedir()
   const cwd = effectiveCwd(input.workdir, input.locationDirectory, home)
-  const atoms = expandAtoms(input.command, cwd, home).map(({ atom, candidates }) => {
-    const verdict = judge(atom, candidates, input)
+  const atoms = expandAtoms(input.command, cwd, home).map(({ atom, candidates, dirs }) => {
+    const judged = judge(atom, candidates, input)
+    const verdict = judged.decision === "deny" ? judged : (selfProtect(atom, dirs, input, home) ?? judged)
     const report: AtomReport = {
       argv: atom.argv,
       isRemote: atom.isRemote,
@@ -97,14 +102,18 @@ export function analyze(input: AnalyzeInput): Analysis {
   return analysis
 }
 
-/** Atoms of `command` with the rule inputs they are matched with; opaque atoms have none. */
-function expandAtoms(command: string, cwd: string, home = os.homedir()): { atom: Atom; candidates: Candidate[] }[] {
+/**
+ * Atoms of `command` with the rule inputs they are matched with (opaque atoms have none) and the local directories
+ * their paths resolve against, where an unknown directory only keeps name-based self-protection matches.
+ */
+function expandAtoms(command: string, cwd: string, home = os.homedir()): { atom: Atom; candidates: Candidate[]; dirs: string[] }[] {
   const dirs: Dir[] = [cwd]
+  const known = (list: Dir[]) => [...new Set(list.map((dir) => dir ?? PLACEHOLDER))]
   return unwrap(tokenize(command)).map((atom) => {
-    if (atom.opaque) return { atom, candidates: [] }
+    if (atom.opaque) return { atom, candidates: [], dirs: known(dirs) }
     const base: Omit<MatchInput, "argv"> = { isRemote: atom.isRemote }
     if (atom.stdin !== undefined) base.stdin = atom.stdin
-    if (atom.isRemote) return { atom, candidates: [{ input: { ...base, argv: atom.argv }, guessed: false }] }
+    if (atom.isRemote) return { atom, candidates: [{ input: { ...base, argv: atom.argv }, guessed: false }], dirs: known(dirs) }
     const atomDirs = (atom.chdir ?? []).reduce(changeDir(home), dirs)
     const at = (dir: string, guessed: boolean): Candidate => ({
       input: { ...base, argv: expandPathArgs(atom.argv, atom.expanded, dir, home).argv },
@@ -113,8 +122,17 @@ function expandAtoms(command: string, cwd: string, home = os.homedir()): { atom:
     const candidates = atomDirs.flatMap((dir) => (dir === null ? [at(PLACEHOLDER, false), at("/", true)] : [at(dir, false)]))
     const target = cdTarget(atom)
     if (target !== undefined) addDirs(dirs, changeDir(home)(atomDirs, target))
-    return { atom, candidates }
+    return { atom, candidates, dirs: known(atomDirs) }
   })
+}
+
+function selfProtect(atom: Atom, dirs: string[], input: AnalyzeInput, home: string): Verdict | undefined {
+  if (!input.protect) return undefined
+  for (const dir of dirs) {
+    const target = protectedTarget(atom, dir, input.protect, input.readOnly, home)
+    if (target !== undefined) return selfProtectVerdict(target)
+  }
+  return undefined
 }
 
 function judge(atom: Atom, candidates: Candidate[], input: AnalyzeInput): Verdict {

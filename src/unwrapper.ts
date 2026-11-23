@@ -26,6 +26,11 @@ export interface Atom {
   wrapperChain: string[]
   /** The tokenized command this atom comes from (redirects, connector). */
   command: Command
+  /**
+   * Commands of the local shell this atom is nested in, outermost first, e.g. `bash -c 'x' > f` for `x`. Their
+   * redirects open files on this machine. Includes `command` unless the atom comes from a remote script.
+   */
+  localCommands: Command[]
   /** Heredoc or here-string text on stdin, including stdin passed through wrappers such as `ssh` or `bash -c`. */
   stdin?: string
   /** Directory changes by wrappers (`env -C`, `sudo -D`) in order; `null` is the home of a login (`sudo -i`, `su -`). */
@@ -36,6 +41,7 @@ export interface Atom {
 
 interface Context {
   isRemote: boolean
+  localCommands: Command[]
   targetHost?: string
   wrapperChain: string[]
   depth: number
@@ -76,7 +82,7 @@ export const XARGS_INPUT = "$XARGS_INPUT"
 
 export function unwrap(script: Script): Atom[] {
   const walk: Walk = { atoms: [], chars: MAX_CHARS, stopped: false }
-  walkScript(script, { isRemote: false, wrapperChain: [], depth: 0 }, walk, emptyCommand())
+  walkScript(script, { isRemote: false, localCommands: [], wrapperChain: [], depth: 0 }, walk, emptyCommand())
   return walk.atoms
 }
 
@@ -100,6 +106,7 @@ function walkScript(script: Script, context: Context, walk: Walk, owner: Command
   for (const command of script.commands) {
     for (const sub of command.substitutions) walkScript(sub, context, walk, command)
     const inner: Context = { ...context }
+    if (!context.isRemote) inner.localCommands = [...context.localCommands, command]
     const stdin = stdinOf(command, context.stdin)
     if (stdin === undefined) delete inner.stdin
     else inner.stdin = stdin
@@ -124,6 +131,7 @@ function atomBase(context: Context, command: Command): Atom {
     isRemote: context.isRemote,
     wrapperChain: context.wrapperChain,
     command,
+    localCommands: context.localCommands,
   }
   if (context.targetHost !== undefined) atom.targetHost = context.targetHost
   if (context.stdin !== undefined) atom.stdin = context.stdin
@@ -150,6 +158,7 @@ function walkArgv(
   for (const layer of layers) {
     const next: Context = {
       isRemote: context.isRemote || layer.host !== undefined,
+      localCommands: context.localCommands,
       wrapperChain: [...context.wrapperChain, layer.label],
       depth: context.depth + 1,
     }

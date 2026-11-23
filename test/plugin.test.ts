@@ -1,10 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { registerPermissionHook } from "../src/hooks/permission"
 import { createMarkers, MARKER_TTL_MS, registerToolHooks } from "../src/hooks/tool"
 import { createPolicy, type Policy } from "../src/policy"
 import type { CompiledRule } from "../src/rules/matcher"
+import { PLUGIN_DIR } from "../src/rules/self-protect"
 import { MODE_ENV } from "../src/state"
 import type { Mode } from "../src/types"
 import { fakeContext } from "./helpers/fake-context"
@@ -27,19 +29,36 @@ function call(tool: string, input: unknown) {
 
 type Call = ReturnType<typeof call>
 
-async function setup(init: { options?: unknown; mode?: Mode; policy?: Policy } = {}) {
-  const fake = fakeContext()
+interface Evaluation {
+  sessionID?: string
+  action: string
+  resources: string[]
+  effect?: "allow" | "ask" | "deny"
+  metadata?: Record<string, unknown>
+  source?: { type: "tool"; messageID: string; id: string }
+}
+
+async function setup(init: { options?: unknown; mode?: Mode; policy?: Policy; directory?: string; home?: string } = {}) {
+  const fake = fakeContext({ directory: init.directory })
   const clock = { t: 1_000_000 }
   const env = init.mode ? { [MODE_ENV]: init.mode } : {}
-  const policy = init.policy ?? createPolicy({ options: init.options ?? {}, storage: fake.ctx.storage, env, now: () => clock.t })
+  const home = init.home ?? "/home/u"
+  const policy = init.policy ?? createPolicy({ options: init.options ?? {}, storage: fake.ctx.storage, env, home, now: () => clock.t })
   const markers = createMarkers(() => clock.t)
-  await registerToolHooks(fake.ctx, { policy, markers, home: "/home/u" })
+  await registerToolHooks(fake.ctx, { policy, markers })
+  await registerPermissionHook(fake.ctx, { policy, markers })
   return {
     ...fake,
     clock,
     markers,
     before: (event: Call) => fake.fire("tool.execute.before", event),
     after: (event: Call) => fake.fire("tool.execute.after", { ...event, status: "completed", result: { output: "" } }),
+    /** Fires `permission.evaluate` like OpenCode after the saved rules allowed the request, and returns the event. */
+    evaluate: async (input: Evaluation) => {
+      const event: Evaluation & { agent: string; message?: string } = { sessionID: "ses_1", agent: "build", effect: "allow", ...input }
+      await fake.fire("permission.evaluate", event)
+      return event
+    },
   }
 }
 
@@ -90,9 +109,9 @@ describe("shell", () => {
     }
   })
 
-  test("off mode allows everything", async () => {
+  test("off mode skips the rules", async () => {
     const s = await setup({ mode: "off" })
-    await s.before(call("shell", { command: "rm -rf /etc" }))
+    await s.before(call("shell", { command: "rm -rf /var" }))
   })
 })
 
@@ -171,10 +190,99 @@ describe("fail closed", () => {
   test("a failing evaluation denies", async () => {
     const bad = { rule: { id: "bad", pattern: "x" }, regex: { test: () => { throw new Error("boom") } } } as unknown as CompiledRule
     const policy: Policy = {
+      home: "/home/u",
       mode: { resolve: async () => ({ mode: "strict", source: "default", locked: false }), setMode: async () => { throw new Error("unused") } },
-      load: () => ({ options: {}, rules: { severity: [], deny: [bad], ask: [], allow: [] }, readOnly: new Map() }),
+      load: () => ({ options: {}, rules: { severity: [], deny: [bad], ask: [], allow: [] }, readOnly: new Map(), protect: { roots: [], exempt: [] } }),
     }
     const s = await setup({ policy })
     await expect(s.before(call("shell", { command: "ls" }))).rejects.toThrow("[safety-policy:policy-error] boom")
+  })
+})
+
+describe("evaluate", () => {
+  const source = (id: string) => ({ type: "tool" as const, messageID: "msg_1", id })
+
+  test("forces the built-in prompt for a marked shell call that a saved rule allows", async () => {
+    const s = await setup()
+    const event = call("shell", { command: "rm /tmp/x" })
+    await s.before(event)
+    const request = { action: "shell", resources: ["rm /tmp/x"], source: source(event.id) }
+    expect(await s.evaluate(request)).toMatchObject({ effect: "ask", message: expect.stringMatching(/^\[safety-policy:rm-local\] \S/) })
+    expect((await s.evaluate({ ...request, effect: "deny" })).effect).toBe("deny")
+    await s.after(event)
+    expect((await s.evaluate(request)).effect).toBe("allow")
+  })
+
+  test("matches nested Code Mode calls by session and command text", async () => {
+    const s = await setup()
+    await s.before(call("shell", { command: "ls && rm /tmp/x" }))
+    const nested = { action: "shell", source: source("call_execute") }
+    expect((await s.evaluate({ ...nested, resources: ["ls", "rm /tmp/x"] })).effect).toBe("ask")
+    expect((await s.evaluate({ ...nested, resources: ["rm /tmp/y"] })).effect).toBe("allow")
+    expect((await s.evaluate({ ...nested, resources: [] })).effect).toBe("allow")
+    expect((await s.evaluate({ ...nested, resources: ["rm /tmp/x"], sessionID: "ses_2" })).effect).toBe("allow")
+  })
+
+  test("locks the plugin's own prompts to ask", async () => {
+    const s = await setup()
+    const resources = ["[safety-policy:mcp-write] reason", "$ srv_write {}"]
+    expect(await s.evaluate({ action: "shell", resources, metadata: { safetyPolicy: true } })).toMatchObject({ effect: "ask", message: resources[0] })
+  })
+
+  test.each([".opencode/agent/a.md", "sub/opencode.jsonc", "/home/u/.config/opencode/x.json", `${PLUGIN_DIR}/index.ts`])(
+    "denies edits to %s",
+    async (resource) => {
+      const s = await setup()
+      const event = await s.evaluate({ action: "edit", resources: ["src/a.ts", resource] })
+      expect(event).toMatchObject({ effect: "deny", message: expect.stringMatching(/^\[safety-policy:self-protect\] \S/) })
+    },
+  )
+
+  test("allows other edits, the plan directory and reads", async () => {
+    const s = await setup()
+    const requests = [
+      { action: "edit", resources: ["src/a.ts"] },
+      { action: "edit", resources: ["/home/u/.opencode/plan/p.md"] },
+      { action: "read", resources: ["opencode.json"] },
+      { action: "external_directory", resources: ["/home/u/.config/opencode/*"] },
+    ]
+    for (const request of requests) expect((await s.evaluate(request)).effect).toBe("allow")
+  })
+
+  test("resolves symlinks against the session directory", async () => {
+    const home = path.join(root, "home")
+    mkdirSync(path.join(home, ".config/opencode"), { recursive: true })
+    mkdirSync(path.join(root, "proj"))
+    symlinkSync(path.join(home, ".config/opencode"), path.join(root, "proj/cfg"))
+    const s = await setup({ directory: path.join(root, "proj"), home })
+    expect((await s.evaluate({ action: "edit", resources: ["cfg/x.json"] })).effect).toBe("deny")
+  })
+})
+
+describe("self-protection", () => {
+  const rm = { command: "rm ~/.config/opencode/opencode.json" }
+
+  test("applies in off mode unless alwaysProtectSelf is false", async () => {
+    const off = await setup({ mode: "off" })
+    await expect(off.before(call("shell", rm))).rejects.toThrow("[safety-policy:self-protect]")
+    expect((await off.evaluate({ action: "edit", resources: ["opencode.json"] })).effect).toBe("deny")
+
+    const disabled = await setup({ mode: "off", options: { alwaysProtectSelf: false } })
+    await disabled.before(call("shell", rm))
+    expect((await disabled.evaluate({ action: "edit", resources: ["opencode.json"] })).effect).toBe("allow")
+  })
+
+  test("alwaysProtectSelf only affects off mode", async () => {
+    const s = await setup({ options: { alwaysProtectSelf: false } })
+    await expect(s.before(call("shell", { command: "echo x > .opencode/a" }))).rejects.toThrow("[safety-policy:self-protect]")
+    expect((await s.evaluate({ action: "edit", resources: ["opencode.json"] })).effect).toBe("deny")
+  })
+
+  test("a broken config denies edits except in off mode", async () => {
+    const s = await setup({ options: { mode: "bogus" } })
+    const event = await s.evaluate({ action: "edit", resources: ["src/a.ts"] })
+    expect(event).toMatchObject({ effect: "deny", message: expect.stringMatching(/^\[safety-policy:config-error\] .*mode/) })
+    const off = await setup({ options: { mode: "bogus" }, mode: "off" })
+    expect((await off.evaluate({ action: "edit", resources: ["opencode.json"] })).effect).toBe("allow")
   })
 })
