@@ -236,6 +236,10 @@
   - `flags` 中任一项命中即可。`-f` 也匹配短选项簇（如 `-rf`），`--force` 也匹配 `--force=…`，`--replicas=0` 也匹配 `--replicas 0`。`--` 之后的参数不参与匹配。
   - `pattern` 作用于 `命令名 参数1 参数2 …`。本机路径参数已展开为绝对路径。带 `command` 的规则还会把 heredoc / here-string 正文（空白折叠为单个空格）接在参数后再试一次，如 `psql <<SQL DROP TABLE x`。不带 `command` 的规则不看 stdin，避免 `cat <<EOF > x.sh` 写脚本时误报。
   - `scope` 为 `local` / `remote` 时，只匹配本机或远端原子命令。
+- 非 shell 工具（MCP 工具、`opencode_worktree_remove` 等）复用同一套规则：
+  - 工具调用视为一条本机原子命令，`argv` 为 `[<工具 ID>, <紧凑 JSON 输入>]`。工具 ID 是 OpenCode 的注册名，带 namespace 时形如 `<namespace>_<name>`，例如 MCP 工具 `github_delete_repository`、内置 `opencode_worktree_remove`。
+  - 只有 `command` 列出该工具 ID 的规则才会匹配工具调用，`pattern` 作用于 `<工具 ID> <JSON>`，如 `opencode_worktree_remove {"directory":"/repo/wt","force":true}`。不带 `command` 的规则不匹配工具调用，避免对写入文件内容的 `edit` 等工具误报。
+  - 这类规则的 `examples` 写成 `<工具 ID> '<JSON>'`，经 shell 分词后与工具调用的 `argv` 相同。
 - 内联规则按原子命令逐条判定，优先级如下：
   1. `off` 模式全部放行（防自篡改单独处理）；
   2. 命中 `extraDeny` 或 `critical` 规则：`deny`；
@@ -253,8 +257,9 @@
 | **`rules/spectrum-cumulus.json`**<br>NVIDIA Spectrum 交换机（Cumulus Linux） | **NVUE**：`nv set`、`nv unset`、`nv config apply`/`detach`/`replace`、`nv action reboot`/`reset`/`install`/`upgrade`；<br>**NCLU & 系统**：`net add`/`del`/`commit`/`abort`、`ifreload -a`、`systemctl stop/restart switchd`、`onie-select`（重装 NOS）、修改 `/etc/network/interfaces` 或 `/etc/nvue.d/` |
 | **`rules/ib-ufm.json`**<br>NVIDIA InfiniBand 交换机 & UFM | **IB 交换机（NVOS / MLNX-OS）**：`nv set/unset/config apply/action ...`、`reload`、`reset factory`、`shutdown`、`no interface`、`image boot/install`、`configuration delete`（经 `ssh` 或管道喂入多行 CLI）；<br>**主机侧 IB/GPU 工具**：`ibportstate disable/reset`、`mlxconfig set`、`flint`/`mlxburn`/`mstfwreset`、`opensm` 启停、`nvidia-smi --gpu-reset`；<br>**UFM 服务与 REST API**：`ufmd stop/restart`、`systemctl stop ufm-enterprise`、`ufm_ha_cluster` 切换、非 `GET` 请求发往 `/ufmRest/actions`（端口隔离/节点重启/固件升级）或 `/ufmRest/resources/pkeys` |
 | **`rules/oob-redfish.json`**<br>主机带外管理（Redfish / BMC / IPMI / NICo） | **CLI**：`ipmitool power off/reset/cycle`、`ipmitool chassis bootdev pxe/cdrom`、`ipmitool mc reset`、`ipmitool raw`、`ipmitool sensor thresh`/`sdr fill`/`fru edit`/`chassis policy`/`sel clear`/`sel delete` 等 BMC 写操作、`redfishtool` 写子命令；<br>**Redfish REST API（防重装机/断电/刷固件）**：对 `/redfish/v1/` 发起的非 `GET` 请求，重点拦截：<br>• `.../Actions/ComputerSystem.Reset`（强制断电/重启）<br>• `.../Actions/VirtualMedia.InsertMedia` / `EjectMedia`（挂载重装 ISO）<br>• `PATCH /redfish/v1/Systems/...` 含 `BootSourceOverrideTarget`（切换 PXE/CD 触发重装）<br>• `.../Actions/Manager.Reset` / `ResetToDefaults`（重置 BMC）<br>• `.../UpdateService/Actions/UpdateService.SimpleUpdate`（刷固件）<br>**管理端点兜底**：发往用户配置的 `protectedEndpoints`（BMC 网段、NICo VIP、UFM VIP）的任意 `POST`/`PUT`/`PATCH`/`DELETE` 请求默认 `deny`（致命动作）或 `ask` |
+| **`rules/opencode-tools.json`**<br>OpenCode 内置工具与 MCP 工具 | `opencode_worktree_remove` 带 `force: true`（丢弃未提交的修改，`high`）。MCP 写操作按 4.1 的工具规则写入 `rulesFile` 或 `extraDeny` / `extraAsk` |
 | **`rules/network-db.json`**<br>通用网络 / 数据库 | `ip link set ... down`、`ip addr flush/del`、`ip route flush/del`、`iptables -F/-X`、`nft flush`、`nmcli ... delete/down`、`rsync --delete`；`DROP DATABASE`/`DROP TABLE`/`TRUNCATE`/`FLUSHALL`/`FLUSHDB` |
-| **SSH 管道、混淆、内置破坏工具与防自篡改** | 管道/重定向/heredoc 喂给 `ssh ... sh/bash/python`、`base64 -d \| sh`、`eval`、动态命令名 / 本地脚本 TOCTOU；内置 `opencode_worktree_remove`（`opencode` namespace，仅在 Code Mode 中可用，内部以 `action: "edit"` 审批；尤其 `force: true`，在 `strict` 下 `deny`）；检查 `shell` 工具 `input.workdir`（若 `effectiveCwd` 位于受保护目录内且含写/删/重定向操作则直接 `deny`）；通过 `permission.hook("evaluate")` + `tool.hook("execute.before")` 联动，拦截 `write`/`edit`/`patch`、Code Mode `fetch`（受保护端点非 `GET`/`HEAD` 写请求及重定向默认 `deny`）与 `Bun.write`/`Bun.file().delete()`/`unlink()` 对经 `path.join(realpath(nearestExistingAncestor(p)), relativeTail)` 规范化后的敏感路径（本插件目录、`/etc/opencode/`、`~/.config/opencode/opencode.json`、`.opencode/`、`rulesFile`、`/etc/network/interfaces`、`/etc/nvue.d/`）的篡改；<br>**防绕过 `/safety` 与审批**：拦截对 `~/.config/opencode/service.json`（Server 密码）的读取，对 OpenCode 数据库（`~/.local/share/opencode/opencode*.db` 及 `-wal`/`-shm`，或 `OPENCODE_DB` 指定路径）的读写与 `sqlite3` 访问，以及 `curl`/`wget`/`http`/Code Mode `fetch` 发往本机回环地址（`localhost`/`127.0.0.1`/`::1`，不限端口）上 OpenCode Server `/api/` 路径的请求 |
+| **SSH 管道、混淆、内置破坏工具与防自篡改** | 管道/重定向/heredoc 喂给 `ssh ... sh/bash/python`、`base64 -d \| sh`、`eval`、动态命令名 / 本地脚本 TOCTOU；内置 `opencode_worktree_remove`（`opencode` namespace，仅在 Code Mode 中可用，内部以 `action: "edit"` 审批；`force: true` 见 `rules/opencode-tools.json`）；检查 `shell` 工具 `input.workdir`（若 `effectiveCwd` 位于受保护目录内且含写/删/重定向操作则直接 `deny`）；通过 `permission.hook("evaluate")` + `tool.hook("execute.before")` 联动，拦截 `write`/`edit`/`patch`、Code Mode `fetch`（受保护端点非 `GET`/`HEAD` 写请求及重定向默认 `deny`）与 `Bun.write`/`Bun.file().delete()`/`unlink()` 对经 `path.join(realpath(nearestExistingAncestor(p)), relativeTail)` 规范化后的敏感路径（本插件目录、`/etc/opencode/`、`~/.config/opencode/opencode.json`、`.opencode/`、`rulesFile`、`/etc/network/interfaces`、`/etc/nvue.d/`）的篡改；<br>**防绕过 `/safety` 与审批**：拦截对 `~/.config/opencode/service.json`（Server 密码）的读取，对 OpenCode 数据库（`~/.local/share/opencode/opencode*.db` 及 `-wal`/`-shm`，或 `OPENCODE_DB` 指定路径）的读写与 `sqlite3` 访问，以及 `curl`/`wget`/`http`/Code Mode `fetch` 发往本机回环地址（`localhost`/`127.0.0.1`/`::1`，不限端口）上 OpenCode Server `/api/` 路径的请求 |
 
 ### 4.3 远端 SSH 只读白名单（`rules/ssh-readonly.json`，用于 `strict` 模式减少误报）
 在 `strict` 模式下，通过 `ssh` 发往远端的命令如果是**纯只读巡检命令**且不带输出重定向，可直接放行（不弹窗），提高运维排障流畅度：
@@ -310,6 +315,7 @@
 - **TTL 回落**：`expiresAt` 为 `null` 表示不过期。过期后恢复到 `previousMode`；`previousMode` 为 `null` 时按下一优先级（环境变量 → 配置 → `strict`）。不带 TTL 切换时 `previousMode` 为 `null`。带 TTL 切换时，若当前状态不带 TTL，`previousMode` 取当前模式；若当前状态也带 TTL，则继承它的 `previousMode`，避免临时模式在叠加切换后变成永久模式。
 - **容错**：环境变量取值非法时按 `strict` 处理（`LOCK_MODE` 非法即锁定为 `strict`）；`ctx.storage` 读取失败时按 `strict` 处理；`safety:state` 内容非法时视为不存在。
 - **`rulesFile`**：须为绝对路径数组，文件格式与内置规则相同。按 `mtime`、大小和 inode 判断变更后重新加载。文件缺失、JSON 非法、规则非法或 `id` 与其他规则重复时，每次决策都会报错，由 hook 层按失败关闭处理，直到文件修复。
+- **配置失败关闭**：`options` 非法或规则无法加载时，插件照常加载并注册 hook，但除 `off` 模式外拒绝所有工具调用（不只是 `shell`，因为无法确定哪些工具有规则），原因为 `[safety-policy:config-error] <出错的字段或文件及错误>`。模式仍按环境变量、运行时状态与默认值解析，`options.mode` 此时不生效。
 
 ### 5.3 用户专属 `/safety` 交互与零副作用回显机制
 
@@ -355,6 +361,7 @@ opencode-safety-policy/       # 仓库根目录
 │   ├── spectrum-cumulus.json # NVIDIA Spectrum 交换机（Cumulus NVUE / NCLU / switchd / onie-select）
 │   ├── ib-ufm.json           # NVIDIA IB 交换机（NVOS / MLNX-OS）/ 主机 IB & GPU 工具 / UFM
 │   ├── oob-redfish.json      # Redfish REST 写动作 / IPMI / BMC / NICo 防重装机
+│   ├── opencode-tools.json   # OpenCode 内置工具与 MCP 工具（opencode_worktree_remove force 等）
 │   ├── network-db.json       # 通用网络配置 / 防火墙 / rsync / 数据库破坏性语句
 │   └── ssh-readonly.json     # SSH 远端只读巡检白名单
 ├── src/

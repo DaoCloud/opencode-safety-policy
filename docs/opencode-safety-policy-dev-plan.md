@@ -223,13 +223,13 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### P0-9 execute.before Hook
 
 - 设计：2（架构图与分工表）、1.2
-- 产出：`src/hooks/tool.ts`、`test/helpers/fake-context.ts`、`test/plugin.test.ts`
+- 产出：`src/hooks/tool.ts`、`rules/opencode-tools.json`、`test/helpers/fake-context.ts`、`test/plugin.test.ts`
 - 要点：
-  - `shell`：调用 analyze。`deny` 时抛 `Error("[safety-policy:<id>] <reason>")`。`ask` 时登记标记 `{ sessionID, callID, command, ruleId, reason, expiresAt }`，放在模块级 `Map`（S6 已验证同一实例）。
-  - `opencode_worktree_remove`：`force: true` 在 `strict` 下 `deny`。
-  - MCP 工具：`deny` 时抛错。`ask` 时插件自行调用 `ctx.permission.assert({ action: "shell", resources, metadata: { safetyPolicy } })`，不传 `save` 和 `source`。
+  - `shell`：调用 analyze。`deny` 时抛 `Error("[safety-policy:<id>] <reason>")`。`ask` 时登记标记 `{ sessionID, callID, command, ruleId, reason, expiresAt }`，放在 Map 中（S6 已验证同一实例）。
+  - 非 shell 工具（MCP、`opencode_worktree_remove` 等）按设计 4.1 的工具规则判定：`argv` 为 `[<工具 ID>, <紧凑 JSON 输入>]`，只匹配 `command` 列出该工具 ID 的规则。`opencode_worktree_remove` 的 `force: true` 是 `rules/opencode-tools.json` 中的 `high` 规则（`strict` 下 `deny`，`relaxed` 下 `ask`）。
+  - 非 shell 工具 `deny` 时抛错。`ask` 时插件自行调用 `ctx.permission.assert({ action: "shell", resources, metadata: { safetyPolicy } })`，不传 `save` 和 `source`。
   - `execute.after`：清理该 callID 的标记。
-  - 失败关闭：`parseOptions`、`RuleProvider.get()` 或 analyze 抛错时，`setup` 不能抛出（否则插件不加载，命令无防护），而是照常注册 hook，对 `shell` 按 `deny` 处理，reason 带上错误信息。
+  - 失败关闭：`parseOptions`、`RuleProvider.get()` 或 analyze 抛错时，`setup` 不能抛出（否则插件不加载，命令无防护），而是照常注册 hook，除 `off` 模式外拒绝所有工具调用（设计 5.2），reason 带上错误信息。
   - `fake-context.ts`：记录 hook 回调，用 `Map` 模拟 storage，记录 `permission.assert` 调用，不依赖 OpenCode 运行时。
 - 验证：`bun test test/plugin.test.ts`
 - commit：`feat: add tool execute.before guard`
