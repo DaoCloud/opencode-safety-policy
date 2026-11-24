@@ -433,21 +433,23 @@
    - Server 插件（`index.ts`）通过 `ctx.rpc.register` 注册 `rpc.ts` 定义的 RPC。RPC `id` 与插件 id 相同，为 `opencode-safety-policy`，避免被其他插件的同名 RPC 覆盖。HTTP 端点为 `/api/rpc/opencode-safety-policy/<method>`。方法为 `status`、`setMode`、`test`，下文简称 `safety.status` 等。
    - `safety.status` 返回当前模式、来源、是否锁定和 TTL 到期时间。`safety.setMode` 接收模式与可选的 `ttlMs`，返回切换后的状态。
    - `safety.setMode` 在 `OPENCODE_SAFETY_LOCK_MODE` 生效时直接拒绝，返回契约中声明的 `locked` 错误。handler 抛出的普通异常会被 OpenCode 转成不带原因的 `rpc.internal`，TUI 无法展示拒绝原因。
-   - TUI 插件（`tui.ts`，基于 `@opencode/plugin/tui`）通过 `ctx.keymap.layer` 注册 `slash: { name: "safety", arguments: true }`（并加入 Command Palette）。layer 必须声明 `mode: "global"`：默认的 `base` 模式在斜杠补全或 Command Palette 打开时不可达，命令只能盲输执行，无法被发现。命令执行时通过 `ctx.client.rpc(definition)` 调用 Server RPC，使用 `ctx.ui.toast.show(...)` 即时展示模式切换/状态，使用 `ctx.ui.dialog.alert(...)` 展示 `/safety test "<cmd>"` 的多行拆壳与命中详情。
+   - `safety.test` 接收 `command` 与可选的 `workdir`，在请求所在的 Location 中按当前模式，对一次 `shell` 调用做与 `execute.before` 相同的判定，包括读取本地脚本做预扫、配置错误时按 `config-error` 拒绝。它返回总结果、命中规则，以及每个原子命令的 `argv`、拆壳链、是否远端和目标主机。命令不会执行，结果也不计入拦截统计。
+   - **最近拦截统计**：hook 每作出一次 `deny` 或 `ask`（含 `config-error`、`policy-error`），就向共享的 `ctx.storage` 追加一条记录：key 为 `safety:block:<13 位毫秒时间戳>:<uuid>`，值为 `{ decision, ruleId }`。不记录命令原文，避免凭据落盘。每条记录用独立的 key，多个 Location 或进程同时写入时不会互相覆盖。写入不等待完成，失败会被忽略，不影响判定。每次写入后顺带删除超过 24 小时的旧记录，每次最多检查 100 条。`safety.status` 扫描最近 24 小时的记录，返回 `recent: { deny, ask, rules }`，其中 `rules` 是命中次数最多的前 3 条规则；读取失败时省略 `recent`。统计只覆盖本插件 hook 作出的决策，不包括用户在审批弹窗中的回复。
+   - TUI 插件（`tui.ts`，基于 `@opencode/plugin/tui`）通过 `ctx.keymap.layer` 注册 `slash: { name: "safety", arguments: true }`（并加入 Command Palette）。layer 必须声明 `mode: "global"`：默认的 `base` 模式在斜杠补全或 Command Palette 打开时不可达，命令只能盲输执行，无法被发现。命令执行时通过 `ctx.client.rpc(definition)` 调用 Server RPC，使用 `ctx.ui.toast.show(...)` 即时展示模式切换/状态，使用 `ctx.ui.dialog.alert(...)` 展示 `/safety test <cmd>` 的多行拆壳与命中详情。
    - TUI 插件同时通过 `ctx.data.on("permission.asked", ...)` 监听审批事件，对 `message` 以 `[safety-policy:` 开头的请求弹 Toast 展示规则原因（TUI 审批弹窗本身不渲染 `message`）。
    - **完全不写入 `session_inbox`**（不使用 `delivery: "queue"` 的 `session.synthetic`，彻底杜绝空闲或运行结束时触发幽灵 LLM 回合及过滤后引发的 400 错误，也避免 TUI 自动补全出现重复 `/safety`）。
 2. **终端 CLI 与无 TUI 场景兜底**：
-   - 独立本地 CLI（`bun ./cli.ts test "<cmd>"`）供规则维护者离线回归和排障。
+   - 独立本地 CLI（`bun ./cli.ts test [--mode <mode>] [--options <file>] "<cmd>"`）供规则维护者离线回归和排障，输出与 `/safety test` 相同。它使用内置规则，工作目录为当前目录。`--mode` 选择模式，默认 `strict`，不读取环境变量和运行时状态。`--options` 读取与 `plugins[].options` 格式相同的 JSON 文件，例如带 `rulesFile` 或 `protectedEndpoints` 的配置。
    - 仅当用户在纯 Desktop/Web App（不运行 TUI）场景显式配置 `options.enableServerSlashCommand: true` 时，服务端才额外注册 `ctx.command.transform("/safety")` 降级入口：使用 `delivery: "steer"` + `resume: false`（随下一条真实用户消息一起消费，不触发单独幽灵回合，但注意运行中调用会消耗 steer 边界）并配合 `session.hook("context" | "compaction" | "generate")` 过滤 `metadata?.source === "safety-policy"`。
 
 | 命令 | 行为 |
 |---|---|
-| `/safety` 或 `/safety status` | 通过 Toast/Dialog 即时显示当前全局模式、来源、是否被环境变量锁定、TTL 剩余时间（零 LLM 副作用）。最近拦截统计推迟到 P1-6：插件实例按 Location 隔离，内存计数不完整且重启清零 |
+| `/safety` 或 `/safety status` | 通过 Toast/Dialog 即时显示当前全局模式、来源、是否被环境变量锁定、TTL 剩余时间，以及最近 24 小时的拒绝、需确认次数和命中最多的规则（零 LLM 副作用） |
 | `/safety strict` | 立即全局切换为严格模式（清除 TTL） |
 | `/safety relaxed` | 切换为宽松模式 |
 | `/safety relaxed --ttl 30m` | 切换为宽松模式，30 分钟后自动回落到切换前的模式（规则见 5.2，默认 `strict`） |
 | `/safety off --ttl 15m` | 临时关闭 15 分钟，到期自动回落（防止忘记切回） |
-| `/safety test "<cmd>"` | 干跑测试某条命令在当前模式下的拆壳结果与命中规则（TUI 弹窗展示，亦可用 `bun ./cli.ts test "<cmd>"`） |
+| `/safety test <cmd>` | 干跑测试某条命令在当前模式下的拆壳结果与命中规则（TUI 弹窗展示，亦可用 `bun ./cli.ts test "<cmd>"`）。`test` 之后的文本原样作为命令；若整体包在一对引号中且内部没有同种引号，则去掉外层引号 |
 
 ---
 
@@ -496,6 +498,8 @@ opencode-safety-policy/       # 仓库根目录
 │   │   ├── permission.ts     # permission.hook("evaluate")（按 source.id / 子串匹配标记强制 shell ask、webfetch deny、edit canonical path）
 │   │   └── session-filter.ts # 可选服务端降级命令启用时的 session.hook("context"|"compaction"|"generate") 过滤
 │   ├── rpc-handlers.ts       # Server 侧 RPC 处理器（status / setMode / test）
+│   ├── stats.ts              # 最近拦截统计：每次 deny/ask 追加一条 ctx.storage 记录，status 汇总最近 24 小时
+│   ├── report.ts             # /safety test 与 cli.ts 共用的结果文本格式化（无运行时依赖，供 TUI 引入）
 │   ├── command.ts            # 可选降级服务端 /safety Slash Command（默认关闭，仅无 TUI 场景按需开启）
 │   └── audit.ts              # 结构化 JSONL 审计日志（写入 ~/.local/state/opencode/ 或自定义路径）
 └── test/
@@ -640,7 +644,7 @@ opencode-safety-policy/       # 仓库根目录
      - `ssh host "kubectl delete ..."`、`ssh sw "nv config apply"` 被拦截；
      - `/safety relaxed --ttl 1m`、`/safety status` 跨重启、跨 Session、跨多个工作目录（多 Location 实例）生效，零 `session_inbox` 残留、零幽灵 LLM 回合；设置 `OPENCODE_SAFETY_LOCK_MODE` 后 `safety.setMode` 被拒绝。
 2. **阶段 2（P1）：深化 `CommandAnalyzer`**
-   - 实现 `http-extractor.ts`、`script-scanner.ts`、Stage 2 Opaque / 混淆检测、SSH heredoc / 管道 / 本地文件重定向专项处理、`analyzer.ts` 串联、evaluate 中 `webfetch`（含 Code Mode `fetch`）受保护端点写请求及重定向 `deny`，以及 `/safety test "<cmd>"` 与 `cli.ts`。
+   - 实现 `http-extractor.ts`、`script-scanner.ts`、Stage 2 Opaque / 混淆检测、SSH heredoc / 管道 / 本地文件重定向专项处理、`analyzer.ts` 串联、evaluate 中 `webfetch`（含 Code Mode `fetch`）受保护端点写请求及重定向 `deny`，以及 `/safety test <cmd>` 与 `cli.ts`。
    - 验证：`bun test test/http-script.test.ts test/rules-examples.test.ts` 通过（覆盖嵌套引号、heredoc、管道、Redfish/UFM HTTP 写请求解析与脚本预扫），实测 `curl -X POST https://bmc/redfish/v1/.../VirtualMedia.InsertMedia` 以及 Code Mode `fetch`（含 307/308 重定向）写请求被拦截。
 3. **阶段 3（P2）：加固与体验**
    - 防绕过 `/safety` 与审批的自保护规则（`service.json`、OpenCode DB、本机 Server `/api/` 端点）、evaluate 中对未匹配 `shell` 请求的 `deny` 级复检、TUI 监听 `permission.asked` 展示规则原因、可选审计日志、可选服务端降级 `/safety` 命令。

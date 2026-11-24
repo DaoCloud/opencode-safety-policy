@@ -350,8 +350,11 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### P1-6 /safety test 与 CLI
 
 - 设计：5.3
-- 产出：`rpc.ts` 新增 `test`、`src/rpc-handlers.ts`、`tui.ts` 用 Dialog 展示拆壳链与命中规则、`cli.ts`
-- 要点：`safety.status` 增加最近拦截统计（从 P0 推迟）。插件实例按 Location 隔离，需先确定计数存放位置。
+- 产出：`rpc.ts` 新增 `test`、`src/rpc-handlers.ts`、`tui.ts` 用 Dialog 展示拆壳链与命中规则、`cli.ts`、`src/stats.ts`、`src/report.ts`
+- 要点：
+  - `safety.test` 复用 `execute.before` 的 shell 判定，不执行命令，也不计入统计。
+  - `safety.status` 增加最近 24 小时拦截统计（从 P0 推迟）。插件实例按 Location 隔离，因此每次 `deny`/`ask` 都向共享 `ctx.storage` 追加一条独立 key 的记录，只存 `{ decision, ruleId }`，不存命令原文。写入不等待、失败忽略，写入时清理过期记录（设计 5.3）。
+  - `cli.ts` 离线使用内置规则，支持 `--mode` 与 `--options <file>`。
 - 验证：`bun ./cli.ts test "ssh n1 \"sudo bash -c 'rm -rf /data/*'\""` 输出拆壳链，结果为 `deny`
 - commit：`feat: add safety test command and cli`
 
@@ -362,7 +365,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [ ] `bun test` 全绿，覆盖嵌套引号、heredoc、管道、Redfish/UFM 写请求和脚本预扫
 - [ ] `curl -X POST https://<bmc>/redfish/v1/.../VirtualMedia.InsertMedia` 被拦截
 - [ ] Code Mode `fetch` 写受保护端点被拦截，包括 307/308 重定向
-- [ ] `/safety test "<cmd>"` 在 TUI 中展示拆壳链和命中规则
+- [ ] `/safety test <cmd>` 在 TUI 中展示拆壳链和命中规则
 
 ---
 
