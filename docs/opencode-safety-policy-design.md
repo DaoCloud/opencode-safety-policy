@@ -618,7 +618,8 @@ opencode-safety-policy/       # 仓库根目录
    - 在仓库根目录执行 `npm publish`（或 CI 在 tag 时自动发布）。
    - 用户只需在 `~/.config/opencode/opencode.json` 添加包名，OpenCode 自动拉取并定期检查更新。
 2. **跳板机 / 管理主机（统一强制基线，重要：防自动发现冲突与同 ID 空插件劫持）**
-   - **不要**同时将插件放入 `/etc/opencode/plugins/` 并在 `/etc/opencode/opencode.json` 中重复声明——OpenCode Supervisor 先加载自动发现目录（`options: {}`），后加载的 `opencode.json` 条目会因 `Duplicate plugin ID` 失败并丢弃 `options`；而且仅靠自动发现加载的插件，可被项目级 `.opencode/opencode.json` 中的 `"plugins": ["-*"]` 卸载。
+   - **不要**同时将插件放入 `/etc/opencode/plugins/` 并在 `/etc/opencode/opencode.json` 中声明另一份拷贝——OpenCode Supervisor 先加载自动发现目录（`options: {}`），后加载的 `opencode.json` 条目会因 `Duplicate plugin ID` 失败并丢弃 `options`；而且仅靠自动发现加载的插件，可被项目级 `.opencode/opencode.json` 中的 `"plugins": ["-*"]` 卸载。
+   - `Duplicate plugin ID` 只在同一 ID 来自不同路径时出现。显式配置自动发现目录本身（`"package": "./plugins/safety-policy"`）指向同一路径，显式条目替换自动发现条目并带上 `options`，不报错。仍推荐下面的非自动发现目录，避免目录里多出一份拷贝时插件静默退化为无 `options` 的默认配置。
    - **关键安全加固（防项目级同 ID 劫持）**：`PluginSupervisor` 处理 `"-*"` 时仅从 `enabled` 集合移除、不会从 `packages` Map 删除先前加载的条目。若不可信仓库在 `.opencode/plugins/` 放置一个导出同 `id: "opencode-safety-policy"` 的空壳插件，它会抢占去重首顺位并导致系统级真实插件因 `Duplicate plugin ID` 失效。因此**必须同步配置 OpenCode 原生 `ManagedPolicy` 的 `policies`（`plugin.use` 白名单）**——`PluginModule.load` 在模块进入 `packages` Map 之前就会先校验 `plugin.use`，直接拦截一切非白名单项目插件。
    - **正确做法**：将本仓库 `package.json` 中 `files` 所列内容推送到**非自动发现目录** `/etc/opencode/safety-policy/`（macOS 为 `/Library/Application Support/opencode/safety-policy/`，Windows 为 `%ProgramData%\opencode\safety-policy\`），在系统级 `opencode.json` 中同时配置 `policies` 与 `plugins`（同一 `policies` 数组按 `findLast` 匹配，后写规则覆盖前写规则；系统级 `managedPolicies` 拥有最高文件策略权威）：
      ```json
@@ -638,8 +639,9 @@ opencode-safety-policy/       # 仓库根目录
      （如需允许其他受信任内部插件，在 `policies` 末尾追加对应的 `allow` 条目即可。）这样可同时满足：① 完全离线加载、不走 npm；② 无 `Duplicate plugin ID` 且 `options` 正常注入；③ 系统级 `managedPolicies` 在加载前直接阻断项目伪造插件，同时 `managedSettings` 在项目配置之后合并，抵御 `"-*"` 卸载；④ 限制只有受信任插件能注册 `shell.hook("create.before")`，避免其他插件在本插件检查后改写命令。
    - **macOS MDM 托管特例**：若 macOS 通过 MDM `ai.opencode.managed.plist` 下发配置，OpenCode 会以 `/Library/Managed Preferences/` 为相对路径基准，此时 `package` 与 `policies[].resource` **均必须填写绝对路径** `"/Library/Application Support/opencode/safety-policy"`，不可使用相对路径 `"./safety-policy"`。
    - 如需禁止用户运行时关闭，可在跳板机 `/etc/profile.d/opencode-safety.sh` 中导出 `OPENCODE_SAFETY_LOCK_MODE=strict`。
+   - 以上 Linux 部署行为（`options` 注入、`plugin.use` 白名单拦截同 ID 空壳插件、项目 `"-*"` 无法卸载、`Duplicate plugin ID` 的触发条件、`/etc/profile.d` 锁定）已在一次性容器中用 OpenCode 2.4.1 验证，见 `test/system/`。
 3. **离线机房交付**：可复用 `infra-integrate` 仓库的 `tools/offline-pack.sh`，或在本仓库用 `npm pack` 生成 tarball 随交付包分发
-   - 由于插件**零第三方运行时依赖**且源码可直接被 OpenCode 的 Bun 运行时加载，只需将本仓库 `package.json` 中 `files` 所列内容打进离线交付包，部署时解压到 `/etc/opencode/safety-policy/` 并在 `/etc/opencode/opencode.json` 中按上述本地路径注册即可立即生效。
+   - 由于插件**零第三方运行时依赖**且源码可直接被 OpenCode 的 Bun 运行时加载，只需将本仓库 `package.json` 中 `files` 所列内容打进离线交付包，部署时解压到 `/etc/opencode/safety-policy/` 并在 `/etc/opencode/opencode.json` 中按上述本地路径注册即可立即生效。OpenCode 以运行时模块提供 `@opencode/plugin` 和 `effect`，部署目录不需要 `node_modules`。
 
 ---
 
