@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { tokenize } from "../src/tokenizer"
-import { unwrap, type Atom } from "../src/unwrapper"
+import { newWalk, unwrap, unwrapScriptFile, type Atom } from "../src/unwrapper"
 
 const atoms = (input: string) => unwrap(tokenize(input))
 const view = (atom: Atom) => ({
@@ -200,8 +200,167 @@ describe("stdin", () => {
     expect(atom?.stdin).toBeUndefined()
   })
 
-  test.each(["bash script.sh <<<'rm x'", "ssh h <hosts.txt", "bash"])("%s does not run stdin", (input) => {
+  test.each(["bash script.sh <<<'rm x'", "bash"])("%s does not run stdin", (input) => {
     expect(only(input).wrapperChain).toEqual([])
+  })
+})
+
+describe("script files on stdin", () => {
+  const marker = (input: string) => {
+    const result = atoms(input).filter((atom) => atom.scriptFile)
+    expect(result).toHaveLength(1)
+    const atom = result[0]!
+    return { scriptFile: atom.scriptFile, chdir: atom.chdir, ...view(atom) }
+  }
+
+  test.each([
+    ["bash < x.sh", ["bash -s"], false],
+    ["sh -s a <x.sh", ["sh -s"], false],
+    ["bash /dev/stdin < x.sh", ["bash -s"], false],
+    ["sudo bash < x.sh", ["sudo", "bash -s"], false],
+    ["sudo -s < x.sh", ["sudo -s"], false],
+    ["su root < x.sh", ["su -s"], false],
+    ["bash -c bash < x.sh", ["bash -c", "bash -s"], false],
+    ["source /dev/stdin < x.sh", ["source"], false],
+    ["{ cat; bash; } < x.sh", ["bash -s"], false],
+    ["(bash) < x.sh", ["bash -s"], false],
+    ["exec < x.sh; bash", ["bash -s"], false],
+    ["command exec < x.sh; bash", ["bash -s"], false],
+    ["exec -a n -- < x.sh; bash", ["bash -s"], false],
+    ["time exec < x.sh; bash", ["bash -s"], false],
+    ["eval 'exec < x.sh'; bash", ["bash -s"], false],
+    [". /dev/stdin <<'EOF'\nexec < x.sh\nEOF\nbash", ["bash -s"], false],
+    ["true | exec < x.sh; bash", ["bash -s"], false],
+    ["bash <&3 < x.sh", ["bash -s"], false],
+    ["bash <<<'rm y' < x.sh", ["bash -s"], false],
+    ["ssh h < x.sh", ["ssh"], true],
+    ["ssh h 'bash -s' < x.sh", ["ssh", "bash -s"], true],
+    ["ssh h 'cat; sudo sh' < x.sh", ["ssh", "sudo", "sh -s"], true],
+    ["kubectl exec -i p -- sh < x.sh", ["kubectl exec", "sh -s"], true],
+    ["pdsh -w n1 < x.sh", ["pdsh"], true],
+  ])("%s runs the local file as a script", (input, wrapperChain, isRemote) => {
+    expect(marker(input)).toMatchObject({ scriptFile: { path: "x.sh" }, wrapperChain, isRemote })
+  })
+
+  test("the file is opened where the redirect is, the script runs where the wrapper changes to", () => {
+    expect(marker("sudo -D /a bash < x.sh")).toMatchObject({ scriptFile: { path: "x.sh" }, chdir: ["/a"] })
+    expect(marker("env -C /a bash -c 'sudo -D /b bash < x.sh'")).toMatchObject({
+      scriptFile: { path: "x.sh", chdir: ["/a"] },
+      chdir: ["/a", "/b"],
+    })
+  })
+
+  test.each([
+    "bash < /dev/null",
+    "bash < /dev//null",
+    "ssh h < /dev/null",
+    "bash < x.sh < /dev/null",
+    "bash < x.sh <<<''",
+    "exec < /dev/null; bash",
+  ])("%s runs an empty script", (input) => {
+    expect(atoms(input).filter((atom) => atom.name === "bash" || atom.wrapperChain.length)).toEqual([])
+  })
+
+  test.each([
+    ["ssh h 'bash < x.sh'", "bash"],
+    ["ssh h 'exec < x.sh; bash'", "bash"],
+    ["python3 < x.py", "python3"],
+    ["bash x.sh < y.sh", "bash"],
+    ["psql < dump.sql", "psql"],
+  ])("%s does not read a local script", (input, name) => {
+    const result = atoms(input)
+    expect(result.filter((atom) => atom.scriptFile || atom.opaque)).toEqual([])
+    expect(result.find((atom) => atom.name === name)).toBeDefined()
+  })
+
+  test.each(["bash < x.sh <&3", "parallel < jobs.txt", "bash < /dev/fd/3"])("%s is opaque", (input) => {
+    expect(atoms(input).find((atom) => atom.opaque)).toMatchObject({ opaque: "piped-script" })
+  })
+
+  test("unwrapScriptFile walks the content in the context of the marker and shares the budgets", () => {
+    const walk = newWalk()
+    const [file] = unwrap(tokenize("ssh h 'sudo bash' < x.sh"), walk)
+    const content = unwrapScriptFile("rm x; bash < y.sh", file!, walk)
+    expect(content.map(view)).toEqual([
+      { argv: ["rm", "x"], isRemote: true, targetHost: "h", wrapperChain: ["ssh", "sudo", "bash -s"] },
+      { argv: ["bash"], isRemote: true, targetHost: "h", wrapperChain: ["ssh", "sudo", "bash -s"] },
+    ])
+    expect(walk.atoms).toHaveLength(3)
+    walk.chars = 3
+    expect(unwrapScriptFile("rm x", file!, walk)).toMatchObject([{ opaque: "too-long" }])
+    expect(unwrapScriptFile("rm x", file!, walk)).toEqual([])
+  })
+})
+
+describe("static pipe input", () => {
+  const stdin = (input: string) => atoms(input).find((atom) => atom.name === "psql")?.stdin
+
+  test.each([
+    ["echo a  b | psql", "a b\n"],
+    ["echo 'a  b' | psql", "a  b\n"],
+    ["echo | psql", "\n"],
+    ["echo -n a | psql", "a"],
+    ["echo -neE a | psql", "a"],
+    ["X=1 echo a | psql", "a\n"],
+    ["echo $'a\\tb' | psql", "a\tb\n"],
+    ["printf 'a\\tb\\\\' | psql", "a\tb\\"],
+    ["printf '%s|' a b | psql", "a|b|"],
+    ["printf '%s-%s|' 1 | psql", "1-|"],
+    ["printf '%s\\n' 'a\\n' | psql", "a\\n\n"],
+    ["printf '100%%' | psql", "100%"],
+    ["echo a | { psql; }", "a\n"],
+    ["echo a |& psql", "a\n"],
+    ["echo a | psql <<<b", "b\n"],
+  ])("%s", (input, expected) => {
+    expect(stdin(input)).toBe(expected)
+  })
+
+  test.each([
+    "echo a | psql < f",
+    "echo a | { cat; psql; }",
+    "echo $X | psql",
+    "echo \"$(cat f)\" | psql",
+    "echo 'a\\nb' | psql",
+    "echo -e a\\\\b | psql",
+    "echo - a | psql",
+    "echo -- a | psql",
+    "echo a > f | psql",
+    "{ echo a; } | psql",
+    "(echo a) | psql",
+    "/bin/echo a | psql",
+    "printf | psql",
+    "printf -v v a | psql",
+    "printf -- a | psql",
+    "printf a b | psql",
+    "printf '%d' 1 | psql",
+    "printf '%5s' a | psql",
+    "printf '%b' a | psql",
+    "printf '\\101' | psql",
+    "printf '\\x41' | psql",
+    "printf 'a\\c' | psql",
+    "printf '\\\"' | psql",
+    "printf '%' | psql",
+    "cat f | psql",
+  ])("%s is not static", (input) => {
+    expect(stdin(input)).toBeUndefined()
+  })
+
+  test("printf output is bounded", () => {
+    const format = `${"x".repeat(1000)}%s`
+    expect(stdin(`printf '${format}' ${"a ".repeat(70)}| psql`)).toBeUndefined()
+    expect(stdin(`printf '${format}' ${"a ".repeat(60)}| psql`)).toHaveLength(60_060)
+  })
+
+  test.each([
+    ["echo 'rm x' | ssh h sh", ["ssh", "sh -s"], true],
+    ["echo 'rm x' | ssh h", ["ssh"], true],
+    ["printf 'rm x\\n' | sudo bash", ["sudo", "bash -s"], false],
+    ["printf '%s\\n' 'rm x' | bash", ["bash -s"], false],
+    ["echo 'rm x' | bash -c 'echo a; bash'", ["bash -c", "bash -s"], false],
+  ])("%s runs the text as a script", (input, wrapperChain, isRemote) => {
+    const result = atoms(input)
+    expect(result.filter((atom) => atom.opaque)).toEqual([])
+    expect(result.find((atom) => atom.name === "rm")).toMatchObject({ isRemote, wrapperChain })
   })
 })
 

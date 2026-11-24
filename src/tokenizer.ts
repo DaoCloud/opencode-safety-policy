@@ -52,6 +52,8 @@ export interface Command {
   outerRedirects?: number
   /** Number of leading `redirects` that apply before the pipe replaces stdin: those of groups enclosing the pipe. */
   pipeAt?: number
+  /** The simple command writing to the `"|"` connector; unset when it is a compound command. */
+  upstream?: Command
 }
 
 export interface Script {
@@ -298,6 +300,8 @@ class Parser {
   private timed?: Command
   /** The current command when it starts with the reserved word `coproc`. */
   private coproc?: Command
+  /** The simple command before a pending `|`. */
+  private upstream?: Command
 
   constructor(
     private readonly src: string,
@@ -419,8 +423,11 @@ class Parser {
   }
 
   private link(connector: Connector) {
+    const last = this.current
+    const compound = this.closed !== undefined
     this.finish()
     this.connector = connector
+    this.upstream = connector === "|" && !compound && this.commands.at(-1) === last ? last : undefined
   }
 
   private finish() {
@@ -451,7 +458,9 @@ class Parser {
     this.sources.push(source)
     command.name = normalizeName(command.argv[0] ?? "")
     if (this.commands.length) command.connector = this.connector ?? ";"
+    if (command.connector === "|" && this.upstream) command.upstream = this.upstream
     this.connector = undefined
+    this.upstream = undefined
     this.commands.push(command)
     this.current = newCommand()
   }
@@ -492,8 +501,10 @@ class Parser {
       if (word.text === "do" && group?.loop) group.loop = false
       if (KEYWORDS.has(word.text)) return
       if (word.text === "coproc") {
+        // A coprocess reads its own pipe, not the pipeline.
         this.coproc = command
         command.piped = true
+        this.upstream = undefined
         return
       }
       if (word.text === "time") this.timed = command

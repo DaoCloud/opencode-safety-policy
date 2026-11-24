@@ -9,7 +9,10 @@
  * expanded, so rules see a variable operand; `find -exec` and `parallel` do the same with `$FIND_PATH` and
  * `$PARALLEL_INPUT`. Inline stdin (heredoc / here-string) flows into wrapped commands, and a shell or `ssh` without
  * a command runs it as a script (`bash <<EOF`, `ssh host <<EOF`). A shell or interpreter that runs a script from
- * a pipe or a process substitution (`curl ... | bash`, `bash <(curl ...)`) yields a `piped-script` opaque atom.
+ * a pipe or a process substitution (`curl ... | bash`, `bash <(curl ...)`) yields a `piped-script` opaque atom. The
+ * output of a literal `echo` / `printf` upstream is inline stdin too. A local file redirected to a shell or `ssh`
+ * (`bash < x.sh`) yields a marker atom with `scriptFile`; the caller reads the file and walks its content with
+ * `unwrapScriptFile`.
  */
 
 import path from "node:path"
@@ -52,7 +55,19 @@ export interface Atom {
   chdir?: (string | null)[]
   /** Set when a script could not be parsed (`name` is `""`) or the wrapper nesting is too deep. */
   opaque?: OpaqueReason
+  /** Set on a marker atom (`name` is `""`) for a local file that the wrapper runs as a script from stdin. */
+  scriptFile?: StdinFile
 }
+
+/** A local file on stdin. */
+export interface StdinFile {
+  path: string
+  /** Wrapper directory changes where the redirect opens the file, like `Atom.chdir`. */
+  chdir?: (string | null)[]
+}
+
+/** Stdin that is not inline text: `true` for a pipe whose content is unknown, or a local file. */
+type Piped = boolean | StdinFile
 
 interface Context {
   isRemote: boolean
@@ -61,14 +76,15 @@ interface Context {
   wrapperChain: string[]
   depth: number
   stdin?: string
-  /** Stdin is a pipe whose content is unknown. */
-  piped?: boolean
+  piped?: Piped
   chdir?: (string | null)[]
 }
 
 type Inner =
   | { argv: string[]; expanded: boolean[]; assignments?: string[] }
   | { script: string }
+  /** The wrapper runs a local file as a script. */
+  | { file: StdinFile }
   /** The wrapper runs code that cannot be known statically. */
   | { opaque: OpaqueReason }
 
@@ -83,9 +99,10 @@ interface Layer {
   chdir?: string | null
 }
 
-type Unwrapper = (args: string[], expanded: boolean[], stdin?: string, piped?: boolean) => Layer[]
+type Unwrapper = (args: string[], expanded: boolean[], stdin?: string, piped?: Piped) => Layer[]
 
-interface Walk {
+/** State shared by one analysis, including the scripts read later with `unwrapScriptFile`. */
+export interface Walk {
   atoms: Atom[]
   /** Characters left for re-tokenizing wrapped scripts. */
   chars: number
@@ -106,7 +123,9 @@ const PYTHON_VERSION = /^python\d+\.\d+$/
 const STANDARD_STREAMS: Record<string, number> = { "/dev/stdin": 0, "/dev/stdout": 1, "/dev/stderr": 2 }
 const DESCRIPTOR_PATH = /^\/(?:dev\/fd|proc\/(?:self|thread-self)\/fd)\/(\d+)$/
 // Characters that make a redirect target known only at run time.
-const DYNAMIC_TARGET = /[$`*?[]/
+export const DYNAMIC_TARGET = /[$`*?[]/
+// Wrappers whose inner command runs in the current shell, so an `exec` in it redirects the shell.
+const SAME_SHELL = new Set(["command", "builtin", "time", "eval", "source", "."])
 // Wrappers that are themselves commands to judge, not only carriers of the inner commands.
 const KEEP = new Set(["find"])
 export const XARGS_INPUT = "$XARGS_INPUT"
@@ -116,11 +135,50 @@ export const PARALLEL_INPUT = "$PARALLEL_INPUT"
 const INPUT_PLACEHOLDER = /\$(?:XARGS_INPUT|FIND_PATH|PARALLEL_INPUT)/
 // More `parallel` input values than this are judged as one variable operand.
 const MAX_PARALLEL_VALUES = 64
+// Bounds static pipe input, which `printf` can make much longer than the command.
+const MAX_STATIC_OUTPUT = 64 * 1024
+const ECHO_OPTIONS = /^-[neE]+$/
+const PRINTF_ESCAPES: Record<string, string> = {
+  "\\": "\\",
+  a: "\x07",
+  b: "\b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  v: "\v",
+}
 
-export function unwrap(script: Script): Atom[] {
-  const walk: Walk = { atoms: [], chars: MAX_CHARS, braces: braceBudget(), stopped: false }
+export function newWalk(): Walk {
+  return { atoms: [], chars: MAX_CHARS, braces: braceBudget(), stopped: false }
+}
+
+/** Atoms of `script`, appended to `walk`. */
+export function unwrap(script: Script, walk = newWalk()): Atom[] {
+  const start = walk.atoms.length
   walkScript(script, { isRemote: false, localCommands: [], wrapperChain: [], depth: 0 }, walk, emptyCommand())
-  return walk.atoms
+  return walk.atoms.slice(start)
+}
+
+/** Atoms of the content of the file of a `scriptFile` marker, run in the context of the marker. */
+export function unwrapScriptFile(text: string, marker: Atom, walk: Walk): Atom[] {
+  if (walk.stopped) return []
+  const start = walk.atoms.length
+  const context: Context = {
+    isRemote: marker.isRemote,
+    localCommands: marker.localCommands,
+    wrapperChain: marker.wrapperChain,
+    depth: marker.wrapperChain.length,
+  }
+  if (marker.targetHost !== undefined) context.targetHost = marker.targetHost
+  if (marker.chdir) context.chdir = marker.chdir
+  if (text.length > walk.chars) {
+    stop(walk, atomBase(context, marker.command))
+  } else {
+    walk.chars -= text.length
+    walkScript(tokenize(text, walk.braces), context, walk, marker.command)
+  }
+  return walk.atoms.slice(start)
 }
 
 function emptyCommand(): Command {
@@ -138,55 +196,142 @@ function stop(walk: Walk, atom: Atom) {
   walk.atoms.push({ ...atom, name: "", argv: [], expanded: [], assignments: [], opaque: "too-long" })
 }
 
-function walkScript(script: Script, context: Context, walk: Walk, owner: Command) {
+interface Input {
+  stdin?: string
+  piped: Piped
+}
+
+function inputContext(context: Context, input: Input): Context {
+  const next: Context = { ...context }
+  if (input.stdin === undefined) delete next.stdin
+  else next.stdin = input.stdin
+  if (input.piped) next.piped = input.piped
+  else delete next.piped
+  return next
+}
+
+function inputOf(context: Context): Input {
+  const piped = context.piped ?? false
+  return context.stdin === undefined ? { piped } : { stdin: context.stdin, piped }
+}
+
+/**
+ * The input of the shell after an `exec` that redirects it to `input`. The `exec` may run in a subshell or not at
+ * all, so `input` is only taken when the shell has no input or the same one; a replaced input becomes unknown.
+ */
+function shellInput(context: Context, input: Input): Input {
+  const piped = context.piped ?? false
+  if (context.stdin === undefined && !piped) return input
+  return input.stdin === context.stdin && input.piped === piped ? input : { piped: true }
+}
+
+/** Walks `script`, and returns the input of the shell after it when an `exec` without a command changes it. */
+function walkScript(script: Script, context: Context, walk: Walk, owner: Command): Input | undefined {
   if (script.opaque) emit(walk, { ...atomBase(context, owner), opaque: script.opaque })
+  let changed = false
   for (const command of script.commands) {
     // Words are expanded before the command's own redirects apply, so `$(...)` and `<(...)` read the pipe of
     // their command or the redirects of an enclosing compound command.
     const words = stdinOf(command, context, command.redirects.slice(0, command.outerRedirects ?? 0))
     for (const sub of command.substitutions) {
-      const outer: Context = { ...context }
-      if (sub.piped || words.piped) outer.piped = true
-      else delete outer.piped
-      if (sub.piped || words.stdin === undefined) delete outer.stdin
-      else outer.stdin = words.stdin
-      walkScript(sub, outer, walk, command)
+      walkScript(sub, inputContext(context, sub.piped ? { piped: true } : words), walk, command)
     }
-    const inner: Context = { ...context }
+    const inner = inputContext(context, stdinOf(command, context))
     if (!context.isRemote) inner.localCommands = [...context.localCommands, command]
-    const input = stdinOf(command, context)
-    if (input.stdin === undefined) delete inner.stdin
-    else inner.stdin = input.stdin
-    if (input.piped) inner.piped = true
-    else delete inner.piped
-    walkArgv(command.argv, command.expanded, command.assignments, inner, command, walk)
-    if (walk.stopped) return
+    const shell = walkArgv(command.argv, command.expanded, command.assignments, inner, command, walk)
+    if (walk.stopped) return undefined
+    if (shell) {
+      context = inputContext(context, shellInput(context, shell))
+      changed = true
+    }
   }
+  return changed ? inputOf(context) : undefined
 }
 
 /**
- * The last stdin redirect wins; a pipe or a file on stdin replaces the inherited input. `<&0`, `< /dev/stdin`
- * and a target known only at run time keep it, `<&-` closes it, and `<&N` or `< /dev/fd/N` duplicates a
- * descriptor whose content is unknown.
+ * The last stdin redirect wins; a pipe or a file on stdin replaces the inherited input, and the output of a
+ * literal `echo` / `printf` upstream is inline text. `<&0` and `< /dev/stdin` keep it, as does a target of a remote
+ * shell known only at run time, `<&-` closes it, `<&N` or `< /dev/fd/N` duplicates a descriptor whose content is
+ * unknown, and `/dev/null` is empty. A local file is kept as a `StdinFile`; a file of a remote shell cannot be read.
  */
-function stdinOf(
-  command: Command,
-  context: Context,
-  redirects = command.redirects,
-): { stdin?: string; piped: boolean } {
+function stdinOf(command: Command, context: Context, redirects = command.redirects): Input {
   const pipe = command.connector === "|" || !!command.piped
-  let stdin = pipe ? undefined : context.stdin
-  let piped = pipe || !!context.piped
+  const literal = command.connector === "|" ? staticOutput(command.upstream) : undefined
+  let stdin = pipe ? literal : context.stdin
+  let piped: Piped = literal === undefined && (pipe || (context.piped ?? false))
   for (const redirect of pipe ? redirects.slice(command.pipeAt ?? 0) : redirects) {
     if ((redirect.fd ?? 0) !== 0 || !redirect.op.startsWith("<")) continue
     const file = redirect.op === "<" || redirect.op === "<>"
-    if (redirect.op === "<&" ? redirect.target === "0" : file && DYNAMIC_TARGET.test(redirect.target)) continue
+    const dynamic = file && context.isRemote && DYNAMIC_TARGET.test(redirect.target)
+    if (redirect.op === "<&" ? redirect.target === "0" : dynamic) continue
     const descriptor = file ? descriptorOf(redirect.target) : undefined
     if (descriptor === 0) continue
     stdin = redirect.body
-    piped = redirect.op === "<&" ? redirect.target !== "-" : descriptor !== undefined
+    if (redirect.op === "<&") piped = redirect.target !== "-"
+    else if (!file) piped = false
+    else if (descriptor !== undefined) piped = true
+    else if (path.posix.normalize(redirect.target) === "/dev/null") {
+      stdin = ""
+      piped = false
+    } else if (context.isRemote) piped = false
+    else piped = context.chdir ? { path: redirect.target, chdir: context.chdir } : { path: redirect.target }
   }
   return stdin === undefined ? { piped } : { stdin, piped }
+}
+
+/** The output of a literal `echo` or `printf` that every shell prints the same way. */
+function staticOutput(command: Command | undefined): string | undefined {
+  if (!command || command.redirects.length || command.substitutions.length || command.piped) return undefined
+  if (command.expanded.some(Boolean)) return undefined
+  const [name, ...args] = command.argv
+  if (name === "echo") return echoOutput(args)
+  if (name === "printf") return printfOutput(args)
+  return undefined
+}
+
+function echoOutput(args: string[]): string | undefined {
+  let i = 0
+  while (i < args.length && ECHO_OPTIONS.test(args[i]!)) i++
+  const newline = !args.slice(0, i).some((arg) => arg.includes("n"))
+  const words = args.slice(i)
+  // zsh ends options at `-`, and escapes are interpreted only by some shells.
+  if (words[0]?.startsWith("-") || words.some((word) => word.includes("\\"))) return undefined
+  return words.join(" ") + (newline ? "\n" : "")
+}
+
+/** `printf` with only `%s` / `%%` conversions and single-character escapes; the format repeats for extra args. */
+function printfOutput(args: string[]): string | undefined {
+  const [format, ...values] = args
+  if (format === undefined || format.startsWith("-")) return undefined
+  const parts: (string | null)[] = []
+  let text = ""
+  for (let i = 0; i < format.length; i++) {
+    const c = format[i]!
+    if (c === "\\") {
+      const escape = PRINTF_ESCAPES[format[++i] ?? ""]
+      if (escape === undefined) return undefined
+      text += escape
+    } else if (c === "%") {
+      const conversion = format[++i]
+      if (conversion === "%") {
+        text += "%"
+        continue
+      }
+      if (conversion !== "s") return undefined
+      parts.push(text, null)
+      text = ""
+    } else text += c
+  }
+  parts.push(text)
+  const slots = parts.filter((part) => part === null).length
+  if (!slots && values.length) return undefined
+  let output = ""
+  let next = 0
+  do {
+    for (const part of parts) output += part ?? values[next++] ?? ""
+    if (output.length > MAX_STATIC_OUTPUT) return undefined
+  } while (next < values.length)
+  return output
 }
 
 /** The descriptor a `/dev/stdin` or `/dev/fd/N` style path opens. */
@@ -225,6 +370,7 @@ function atomBase(context: Context, command: Command): Atom {
   return atom
 }
 
+/** Walks a command, and returns the input of the shell after it when it is an `exec` without a command. */
 function walkArgv(
   argv: string[],
   expanded: boolean[],
@@ -232,7 +378,7 @@ function walkArgv(
   context: Context,
   command: Command,
   walk: Walk,
-) {
+): Input | void {
   if (walk.stopped) return
   if (context.depth) expanded = expanded.map((flag, k) => flag || INPUT_PLACEHOLDER.test(argv[k]!))
   const name = normalizeName(argv[0] ?? "")
@@ -240,9 +386,13 @@ function walkArgv(
   const unwrapper = isDynamicName(argv[0] ?? "", expanded[0] ?? false) ? undefined : wrapperFor(name)
   if (!unwrapper) return emit(walk, atom)
   const layers = unwrapper(argv.slice(1), expanded.slice(1), context.stdin, context.piped)
-  if (!layers.length) return emit(walk, atom)
+  if (!layers.length) {
+    emit(walk, atom)
+    return name === "exec" ? inputOf(context) : undefined
+  }
   if (KEEP.has(name)) emit(walk, atom)
   if (context.depth >= MAX_DEPTH) return emit(walk, { ...atom, opaque: "too-deep" })
+  let shell: Input | void = undefined
   for (const layer of layers) {
     const next: Context = {
       isRemote: context.isRemote || layer.host !== undefined,
@@ -254,23 +404,28 @@ function walkArgv(
     if (host !== undefined) next.targetHost = host
     if (!layer.readsStdin) {
       if (context.stdin !== undefined) next.stdin = context.stdin
-      if (context.piped) next.piped = true
+      if (context.piped) next.piped = context.piped
     }
     if (layer.chdir !== undefined) next.chdir = [...(context.chdir ?? []), layer.chdir]
     else if (context.chdir) next.chdir = context.chdir
     const inner = layer.inner
+    let result: Input | void = undefined
     if ("opaque" in inner) {
       emit(walk, { ...atomBase(next, command), opaque: inner.opaque })
+    } else if ("file" in inner) {
+      emit(walk, { ...atomBase(next, command), scriptFile: inner.file })
     } else if ("argv" in inner) {
-      walkArgv(inner.argv, inner.expanded, [...assignments, ...(inner.assignments ?? [])], next, command, walk)
+      result = walkArgv(inner.argv, inner.expanded, [...assignments, ...(inner.assignments ?? [])], next, command, walk)
     } else if (inner.script.length > walk.chars) {
       stop(walk, atomBase(next, command))
     } else {
       walk.chars -= inner.script.length
-      walkScript(tokenize(inner.script, walk.braces), next, walk, command)
+      result = walkScript(tokenize(inner.script, walk.braces), next, walk, command)
     }
     if (walk.stopped) return
+    if (result && SAME_SHELL.has(layer.label)) shell = result
   }
+  return shell
 }
 
 function wrapperFor(name: string): Unwrapper | undefined {
@@ -380,7 +535,7 @@ function xargs(args: string[], expanded: boolean[]): Layer[] {
   return [{ label: "xargs", inner: { argv, expanded: flags }, readsStdin: true }]
 }
 
-function sudo(args: string[], expanded: boolean[], stdin?: string, piped?: boolean): Layer[] {
+function sudo(args: string[], expanded: boolean[], stdin?: string, piped?: Piped): Layer[] {
   const spec = OPTION_SPECS.sudo
   let i = 0
   let edit = false
@@ -456,9 +611,14 @@ function opaqueLayer(label: string, host?: string, reason: OpaqueReason = "piped
   return layer
 }
 
-/** Layers of a wrapper that runs its stdin as a script: the inline text, or an opaque script from a pipe. */
-function stdinLayers(label: string, stdin: string | undefined, piped: boolean | undefined, host?: string): Layer[] {
+/** Layers of a wrapper that runs its stdin as a script: the inline text, a local file, or an opaque pipe. */
+function stdinLayers(label: string, stdin: string | undefined, piped: Piped | undefined, host?: string): Layer[] {
   if (stdin !== undefined) return [stdinScript(label, stdin, host)]
+  if (typeof piped === "object") {
+    const layer: Layer = { label, inner: { file: piped }, readsStdin: true }
+    if (host !== undefined) layer.host = host
+    return [layer]
+  }
   return piped ? [opaqueLayer(label, host)] : []
 }
 
@@ -508,7 +668,7 @@ function sshHost(destination: string) {
   return host.replace(/^\[(.*)\]$/, "$1")
 }
 
-function ssh(args: string[], _: boolean[], stdin?: string, piped?: boolean): Layer[] {
+function ssh(args: string[], _: boolean[], stdin?: string, piped?: Piped): Layer[] {
   const layers: Layer[] = []
   let destination: string | undefined
   let remoteCommand: string | undefined
@@ -796,12 +956,12 @@ function ansibleLayers(label: string, host: string, params: Record<string, unkno
 }
 
 /** A command run on many hosts; without a command, `pdsh` / `clush` read commands from stdin. */
-function fanOut(label: string, host: string, command: string[], stdin?: string, piped?: boolean): Layer[] {
+function fanOut(label: string, host: string, command: string[], stdin?: string, piped?: Piped): Layer[] {
   if (command.length) return [{ label, host, inner: { script: command.join(" ") } }]
   return stdinLayers(label, stdin, piped, host)
 }
 
-function pdsh(args: string[], _: boolean[], stdin?: string, piped?: boolean): Layer[] {
+function pdsh(args: string[], _: boolean[], stdin?: string, piped?: Piped): Layer[] {
   let nodes: string | undefined
   let group: string | undefined
   let i = 0
@@ -837,7 +997,7 @@ function pssh(name: string): Unwrapper {
   }
 }
 
-function clush(args: string[], _: boolean[], stdin?: string, piped?: boolean): Layer[] {
+function clush(args: string[], _: boolean[], stdin?: string, piped?: Piped): Layer[] {
   const spec = OPTION_SPECS.clush
   let nodes: string | undefined
   let group: string | undefined
@@ -860,7 +1020,7 @@ function clush(args: string[], _: boolean[], stdin?: string, piped?: boolean): L
 }
 
 /** `chroot [options] newroot [command...]` runs in `/` of the new root; without a command it runs a shell. */
-function chroot(args: string[], expanded: boolean[], stdin?: string, piped?: boolean): Layer[] {
+function chroot(args: string[], expanded: boolean[], stdin?: string, piped?: Piped): Layer[] {
   let skip = false
   let i = 0
   while (i < args.length) {
@@ -945,7 +1105,7 @@ type JobInput = { value?: string; values?: string[]; seq?: number; size?: number
  * `:::` arguments or of stdin; `::::` files, `-a`, piped stdin, dynamic values and options that split values
  * make them unknown. Several sources and options that put several values in one job group them.
  */
-function parallel(argv: string[], expanded: boolean[], stdin?: string, piped?: boolean): Layer[] {
+function parallel(argv: string[], expanded: boolean[], stdin?: string, piped?: Piped): Layer[] {
   const spec = OPTION_SPECS.parallel
   const args = [...argv]
   let host: string | undefined
@@ -1247,7 +1407,8 @@ function interpreter(name: string, { options, code, info }: InterpreterSpec): Un
     const script = args[i]
     const file = script === undefined || script === "-" ? "stdin" : scriptFile(script, expanded[i])
     if (file === "opaque") return [opaqueLayer(name)]
-    return piped && file === "stdin" ? [opaqueLayer(name)] : []
+    // A script file on stdin is prescanned with other interpreter scripts (design 3.1 Stage 3.5).
+    return piped === true && file === "stdin" ? [opaqueLayer(name)] : []
   }
 }
 

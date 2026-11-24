@@ -151,6 +151,24 @@ describe("lists and pipelines", () => {
     expect(commands[1]?.connector).toBe("|")
     expect(commands[1]?.argv).toEqual(["ssh", "node1", "sh"])
   })
+
+  test.each([
+    ["echo a | sh", "sh", "echo"],
+    ["echo a |\n sh", "sh", "echo"],
+    ["echo a |& sh", "sh", "echo"],
+    ["x; echo a | b | sh", "sh", "b"],
+    ["echo a | { sh; }", "sh", "echo"],
+    ["echo a | { sh; bash; }", "bash", undefined],
+    ["{ echo a; } | sh", "sh", undefined],
+    ["(echo a) | sh", "sh", undefined],
+    ["if :; then echo a; fi | sh", "sh", undefined],
+    ["{ echo a; } > f | sh", "sh", undefined],
+    ["echo a | coproc sh", "sh", undefined],
+    ["echo a | sh; bash", "bash", undefined],
+  ])("%s records the simple upstream command of %s", (input, name, upstream) => {
+    const command = tokenize(input).commands.find((command) => command.name === name)
+    expect(command?.upstream?.name).toBe(upstream)
+  })
 })
 
 describe("redirects", () => {
