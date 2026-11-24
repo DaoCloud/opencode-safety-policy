@@ -3,7 +3,7 @@
  *
  * Each `deny` or `ask` made by the hooks and each mode switch appends one line. A new file is created with mode 0600,
  * as commands may hold credentials. The log is best-effort and must not change a decision: `write` never rejects, and
- * a failed append is dropped.
+ * a failed append is dropped. Appends run one at a time, so the lines of one instance keep the order of the writes.
  */
 
 import { appendFile } from "node:fs/promises"
@@ -34,14 +34,16 @@ export interface Audit {
 
 /** Writes nothing when `file` is `undefined`. `directory` is the Location of the plugin instance. */
 export function createAudit(file: string | undefined, directory: string, now: () => number = Date.now): Audit {
+  let last: Promise<void> = Promise.resolve()
   return {
-    async write(entry) {
-      if (file === undefined) return
+    write(entry) {
+      if (file === undefined) return last
       const time = new Date(now()).toISOString()
       const long = "input" in entry && entry.input.length > INPUT_MAX
       const input = long ? { input: `${entry.input.slice(0, INPUT_MAX)}…` } : {}
       const line = JSON.stringify({ time, ...entry, ...input, directory })
-      await appendFile(file, `${line}\n`, { mode: 0o600 }).catch(() => {})
+      last = last.then(() => appendFile(file, `${line}\n`, { mode: 0o600 })).catch(() => {})
+      return last
     },
   }
 }

@@ -666,6 +666,14 @@ describe("audit", () => {
     expect(auditLines(file)[0].input).toBe(`${command.slice(0, 4096)}…`)
   })
 
+  test("keeps the order of the writes", async () => {
+    const file = path.join(root, "audit-order.jsonl")
+    const audit = createAudit(file, root)
+    const order = Array.from({ length: 50 }, (_, i) => i)
+    await Promise.all(order.map((ttlMs) => audit.write({ event: "mode", mode: "off", ttlMs })))
+    expect(auditLines(file).map((line) => line.ttlMs)).toEqual(order)
+  })
+
   test("an unwritable log never changes a decision", async () => {
     const s = await setup({ options: { auditLogPath: path.join(root, "missing", "audit.jsonl") } })
     await expect(s.before(call("shell", { command: "rm -rf /data" }))).rejects.toThrow("[safety-policy:rm-system-path]")
