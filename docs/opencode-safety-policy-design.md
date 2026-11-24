@@ -323,7 +323,9 @@
 采用 OpenCode 原生 **TUI 入口（`./tui`）+ 插件 RPC（`./rpc`）** 架构提供 `/safety` 命令（**不暴露为 LLM 工具**，Agent 无法通过工具调用切换模式；但 RPC 经本机 Server API `/api/rpc/:rpcID/:method` 暴露，同用户进程拿到 Server 密码即可调用，防护措施与边界见 [1.2](#12-非目标与安全边界)）：
 
 1. **主通道（TUI + RPC，零 `session_inbox` 副作用）**：
-   - Server 插件（`index.ts`）通过 `ctx.rpc.register` 注册 `safety.status`、`safety.setMode`、`safety.test` 三个强类型 RPC 方法。`safety.setMode` 在 `OPENCODE_SAFETY_LOCK_MODE` 生效时直接拒绝。
+   - Server 插件（`index.ts`）通过 `ctx.rpc.register` 注册 `rpc.ts` 定义的 RPC。RPC `id` 与插件 id 相同，为 `opencode-safety-policy`，避免被其他插件的同名 RPC 覆盖。HTTP 端点为 `/api/rpc/opencode-safety-policy/<method>`。方法为 `status`、`setMode`、`test`，下文简称 `safety.status` 等。
+   - `safety.status` 返回当前模式、来源、是否锁定和 TTL 到期时间。`safety.setMode` 接收模式与可选的 `ttlMs`，返回切换后的状态。
+   - `safety.setMode` 在 `OPENCODE_SAFETY_LOCK_MODE` 生效时直接拒绝，返回契约中声明的 `locked` 错误。handler 抛出的普通异常会被 OpenCode 转成不带原因的 `rpc.internal`，TUI 无法展示拒绝原因。
    - TUI 插件（`tui.ts`，基于 `@opencode/plugin/tui`）通过 `ctx.keymap.layer` 注册 `slash: { name: "safety", arguments: true }`（并加入 Command Palette），执行时通过 `ctx.client.rpc(definition)` 调用 Server RPC，使用 `ctx.ui.toast.show(...)` 即时展示模式切换/状态，使用 `ctx.ui.dialog.alert(...)` 展示 `/safety test "<cmd>"` 的多行拆壳与命中详情。
    - TUI 插件同时通过 `ctx.data.on("permission.asked", ...)` 监听审批事件，对 `message` 以 `[safety-policy:` 开头的请求弹 Toast 展示规则原因（TUI 审批弹窗本身不渲染 `message`）。
    - **完全不写入 `session_inbox`**（不使用 `delivery: "queue"` 的 `session.synthetic`，彻底杜绝空闲或运行结束时触发幽灵 LLM 回合及过滤后引发的 400 错误，也避免 TUI 自动补全出现重复 `/safety`）。
@@ -333,11 +335,11 @@
 
 | 命令 | 行为 |
 |---|---|
-| `/safety` 或 `/safety status` | 通过 Toast/Dialog 即时显示当前全局模式、是否被环境变量锁定、TTL 剩余时间、最近拦截统计（零 LLM 副作用） |
+| `/safety` 或 `/safety status` | 通过 Toast/Dialog 即时显示当前全局模式、来源、是否被环境变量锁定、TTL 剩余时间（零 LLM 副作用）。最近拦截统计推迟到 P1-6：插件实例按 Location 隔离，内存计数不完整且重启清零 |
 | `/safety strict` | 立即全局切换为严格模式（清除 TTL） |
 | `/safety relaxed` | 切换为宽松模式 |
-| `/safety relaxed --ttl 30m` | 切换为宽松模式，30 分钟后自动恢复 `strict` |
-| `/safety off --ttl 15m` | 临时关闭 15 分钟，到期自动恢复 `strict`（防止忘记切回） |
+| `/safety relaxed --ttl 30m` | 切换为宽松模式，30 分钟后自动回落到切换前的模式（规则见 5.2，默认 `strict`） |
+| `/safety off --ttl 15m` | 临时关闭 15 分钟，到期自动回落（防止忘记切回） |
 | `/safety test "<cmd>"` | 干跑测试某条命令在当前模式下的拆壳结果与命中规则（TUI 弹窗展示，亦可用 `bun ./cli.ts test "<cmd>"`） |
 
 ---

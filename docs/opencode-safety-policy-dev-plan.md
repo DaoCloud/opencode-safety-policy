@@ -251,10 +251,11 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### P0-11 Server 入口与 RPC
 
 - 设计：5.2、5.3、6
-- 产出：`index.ts`、`rpc.ts`（P0 只有 `status`、`setMode`）、`src/rpc-handlers.ts`
+- 产出：`index.ts`、`rpc.ts`（P0 只有 `status`、`setMode`）、`src/rpc-handlers.ts`，`package.json` 增加 `./rpc` 导出
 - 要点：
-  - `setup` 依次：解析 options → 构建规则引擎 → 注册 hooks 与 RPC → 返回 `Cleanup`（注销 hook，清空标记）。
-  - `setMode` 在 LOCK 生效时拒绝。
+  - `setup` 依次：解析 options → 构建规则引擎 → 注册 hooks 与 RPC → 返回 `Cleanup`（注销 hook 与 RPC，清空标记）。
+  - RPC `id` 为 `opencode-safety-policy`，契约用 JSON Schema。`status` 返回 `mode`、`source`、`locked`，TTL 生效时带 `expiresAt`。`setMode` 输入 `mode` 与可选 `ttlMs`，返回切换后的状态。
+  - `setMode` 在 LOCK 生效时返回声明的 `locked` 错误（带锁定的 `mode`），不抛异常。
 - 验证：`plugin.test.ts` 覆盖 setup → hook → cleanup 全过程；`bunx tsc --noEmit`
 - commit：`feat: wire server plugin entry and rpc`
 
@@ -331,6 +332,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 
 - 设计：5.3
 - 产出：`rpc.ts` 新增 `test`、`src/rpc-handlers.ts`、`tui.ts` 用 Dialog 展示拆壳链与命中规则、`cli.ts`
+- 要点：`safety.status` 增加最近拦截统计（从 P0 推迟）。插件实例按 Location 隔离，需先确定计数存放位置。
 - 验证：`bun ./cli.ts test "ssh n1 \"sudo bash -c 'rm -rf /data/*'\""` 输出拆壳链，结果为 `deny`
 - commit：`feat: add safety test command and cli`
 
