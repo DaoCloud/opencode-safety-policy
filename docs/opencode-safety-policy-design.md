@@ -252,7 +252,8 @@
   │       - python/perl/ruby/node 的 -c/-e/-p 内联代码、heredoc / here-string 程序、< foo.py 输入与
   │         脚本参数（python3 foo.py；node 依次尝试 .js、.mjs、.cjs 后缀）做轻量静态预扫。代码调用
   │         进程 API（os.system、subprocess、child_process、system、反引号等）时，每个字符串字面量
-  │         及全部由字面量组成的列表（["rm", "-rf", "/data"]）按 shell 命令分析；文件删除 API
+  │         及全部由字面量组成的列表（["rm", "-rf", "/data"]）按 shell 命令分析，字面量中的插值（f-string 的
+  │         {d}、ruby 的 #{d}、JS 模板字符串的 ${d}）按 shell 变量处理；文件删除 API
   │         （shutil.rmtree、os.remove、fs.rmSync、FileUtils.rm_rf 等）的字面量路径按等价的 rm 分析；
   │         命中敏感端点 + 写动作关键字（如 /redfish/v1/ + InsertMedia/ComputerSystem.Reset/
   │         BootSourceOverride/PATCH/POST）时按 HTTP 规则判定。预扫得到的命令只按规则判定，
