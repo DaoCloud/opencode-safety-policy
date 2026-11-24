@@ -263,8 +263,8 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 
 - 设计：5.3
 - 产出：`tui.ts`
-- 要点：用 `keymap.layer` 注册 `/safety`，支持 `status`、`strict`、`relaxed`、`off` 和 `--ttl`；调用 RPC，用 Toast 展示结果；LOCK 拒绝时展示原因。
-- 验证：`bunx tsc --noEmit`；TUI 行为放到 P0-E2E 手测
+- 要点：用 `keymap.layer` 注册 `/safety`，支持 `status`、`strict`、`relaxed`、`off` 和 `--ttl`（单位 `s`、`m`、`h`）；调用 RPC，用 Toast 展示结果；LOCK 拒绝时展示原因。监听 `permission.asked`，对本插件强制的审批弹 Toast 展示规则原因。
+- 验证：`test/tui.test.ts` 用模拟的 TUI Context 覆盖参数解析、Toast 和审批原因；`bunx tsc --noEmit`；真实 TUI 行为放到 P0-E2E 手测
 - commit：`feat: add tui safety command`
 
 ### P0-E2E
@@ -274,6 +274,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [ ] 本机 `rm -rf /data`、`shell({ workdir: "/", command: "rm -rf etc" })`、`kubectl delete`、`docker stop`、`opencode_worktree_remove(force: true)` 被拦截
 - [ ] `/tmp` 下的常规 `rm` 只弹一次内置审批，直调和 `full_codemode` 两种场景都要测
 - [ ] Desktop/Web App 的审批弹窗显示规则原因
+- [ ] TUI 中被强制审批时，弹 Toast 显示规则原因
 - [ ] 点 `Always` 后再次执行同一命令，仍弹窗
 - [ ] Code Mode 中被拒绝的调用不会执行，即使沙箱代码 `try/catch` 了错误
 - [ ] `ssh host "kubectl delete ..."`、`ssh sw "nv config apply"` 被拦截
@@ -445,7 +446,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [x] P0-9 execute.before Hook
 - [x] P0-10 evaluate Hook 与基础自保护
 - [x] P0-11 Server 入口与 RPC
-- [ ] P0-12 TUI 入口
+- [x] P0-12 TUI 入口
 - [ ] P0-E2E
 - [ ] P1-1 Opaque / 混淆检测
 - [ ] P1-2 SSH heredoc、管道与重定向

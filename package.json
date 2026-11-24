@@ -6,13 +6,15 @@
   "exports": {
     ".": "./index.ts",
     "./server": "./index.ts",
-    "./rpc": "./rpc.ts"
+    "./rpc": "./rpc.ts",
+    "./tui": "./tui.ts"
   },
   "files": [
     "index.ts",
     "rpc.ts",
     "rules",
-    "src"
+    "src",
+    "tui.ts"
   ],
   "scripts": {
     "test": "bun test",
