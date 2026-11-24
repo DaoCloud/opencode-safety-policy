@@ -44,3 +44,22 @@ jobs:
       - run: npm install -g "@opencode/cli@$OPENCODE_VERSION"
       - run: opencode --version
       - run: bun run test:e2e
+
+  system:
+    name: System deployment (OpenCode ${{ github.event_name == 'schedule' && 'latest' || '2.4.1' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OPENCODE_VERSION: ${{ github.event_name == 'schedule' && 'latest' || '2.4.1' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+      - run: bun install --frozen-lockfile
+      - run: npm install -g "@opencode/cli@$OPENCODE_VERSION"
+      - run: opencode --version
+      - run: bun run test:system

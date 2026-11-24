@@ -20,6 +20,7 @@
   "scripts": {
     "test": "bun test",
     "test:e2e": "OCSP_E2E=1 bun test test/e2e",
+    "test:system": "sh test/system/run.sh",
     "typecheck": "bunx tsc --noEmit"
   },
   "peerDependencies": {

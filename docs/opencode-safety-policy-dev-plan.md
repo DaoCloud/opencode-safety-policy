@@ -25,6 +25,7 @@
 | 单元测试 | `bun test` | 全部通过（P0-1 尚无测试，跳过） |
 | 类型检查 | `bunx tsc --noEmit` | 0 error |
 | E2E | `bun run test:e2e` | 改动涉及 hook、判定结果、RPC 或 TUI 时全部通过（需要本机 `opencode`，见第 4 节） |
+| 系统级部署 | `bun run test:system` | 改动涉及加载、打包文件或 `options` 时全部通过（需要本机 `docker` 和 `opencode`，见 R-2） |
 | 零运行时依赖 | `jq '.dependencies // {}' package.json` | 输出 `{}` |
 | 工作区干净 | `git status --short` | 只有本 Step 的文件，无调试产物 |
 
@@ -63,7 +64,7 @@
 - 模型：本地 mock LLM（OpenAI 兼容，`providers.mock` 用 `@opencode/ai/providers/openai-compatible`，`baseURL` 指向本机端口），把用户消息中的 `@@CALL <tool> <json>` 依次转成工具调用，不需要真实模型凭据。实现见 Spike 产物 `/tmp/ocsp-spike/mock-llm.ts`。
 - 驱动方式：
   - `opencode run --standalone '<消息>'`：非交互，审批自动拒绝，适合验证 deny 与“弹出审批”。
-  - `opencode serve --hostname 127.0.0.1 --port <p>` + HTTP API（Basic 认证，用户名 `opencode`，密码见启动日志）：`GET /api/session/:id/permission` 查询审批，`POST /api/session/:id/permission/:requestID/reply` 回复 `once`/`always`/`reject`，`POST /api/rpc/:rpcID/:method` 调用插件 RPC，请求体为 `{ "input": ... }`。插件按 Location 懒加载，对新目录的第一次请求可能返回 `rpc.unavailable`，稍后重试即可。
+  - `opencode serve --hostname 127.0.0.1 --port <p>` + HTTP API（Basic 认证，用户名 `opencode`，密码见启动日志）：`GET /api/session/:id/permission` 查询审批，`POST /api/session/:id/permission/:requestID/reply` 回复 `once`/`always`/`reject`，`POST /api/rpc/:rpcID/:method` 调用插件 RPC，请求体为 `{ "input": ... }`。`POST /api/session` 从请求体的 `location` 取目录，不读 query 中的 `location[directory]`，缺省为 `serve` 的 cwd。插件按 Location 懒加载，对新目录的第一次请求可能返回 `rpc.unavailable`，稍后重试即可。
   - TUI：`opencode --standalone <dir>`，用 `Bun.Terminal` 提供 pty、`@xterm/headless` 渲染屏幕后断言文本。
 - 替身命令：拦截失效时命令会真实执行，所以 E2E 前把 `rm`、`kubectl`、`docker`、`ssh`、`nv` 等替身脚本放到 `PATH` 最前，替身只打印参数。规则按命令名判定，替身不影响结果。
 - 不修改 `/etc/opencode` 和个人 `~/.config/opencode`（本机为共享环境）。系统级部署放到 R-2，在容器或 VM 中验证。
@@ -424,12 +425,14 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 
 ### R-2 系统级部署验证（容器或 VM，不在共享机上做）
 
-- [ ] 按设计 8 第 2 点部署，`options` 正常注入
-- [ ] `plugin.use` 白名单拦截项目中同 ID 的空壳插件
-- [ ] 项目配置 `"plugins": ["-*"]` 无法卸载本插件
-- [ ] 核实设计 8 的推断：插件同时出现在自动发现目录和显式配置中时，确实报 `Duplicate plugin ID`
-- [ ] `/etc/profile.d` 中导出 `OPENCODE_SAFETY_LOCK_MODE` 后生效
+- [x] 按设计 8 第 2 点部署，`options` 正常注入
+- [x] `plugin.use` 白名单拦截项目中同 ID 的空壳插件
+- [x] 项目配置 `"plugins": ["-*"]` 无法卸载本插件
+- [x] 核实设计 8 的推断：插件同时出现在自动发现目录和显式配置中时，确实报 `Duplicate plugin ID`
+- [x] `/etc/profile.d` 中导出 `OPENCODE_SAFETY_LOCK_MODE` 后生效
 - 发现与设计不符时，修改设计文档：`docs: correct system deployment notes`
+- 实现：`test/system/deploy.test.ts`，用 `bun pm pack` 打出的 tarball 部署到 `/etc/opencode`，复用 E2E 的 harness 和 mock LLM。`plugin.use` 白名单和 `"-*"` 两项各有一个不加防护时失效的对照用例。`bun run test:system`（`test/system/run.sh`）在一次性 `ubuntu:24.04` 容器中运行，挂载本机的 `bun`、`opencode` 和只读仓库。不在容器中设置 `OCSP_SYSTEM=1` 会直接报错，避免改写共享机的 `/etc`。
+- 结论：设计 8 第 2 点成立。补充一点：`Duplicate plugin ID` 只在同一 ID 来自不同路径时出现，显式配置自动发现目录本身不报错。
 
 ### R-3 打包
 
@@ -446,10 +449,11 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 | 规则回归 | 全部 `rules/*.json` 的 `examples` | `rules-examples.test.ts` 自动遍历，新增规则不用写测试代码 |
 | 插件集成 | hook 编排、标记匹配、setup/cleanup、RPC | `fake-context.ts`。只验证插件自身逻辑，不能代替真实 OpenCode 行为 |
 | 真实行为 | OpenCode 的审批、Code Mode、TUI、storage | Spike + 各阶段 E2E 清单，可自动化的项放进 `test/e2e/`（`bun run test:e2e`） |
+| 系统级部署 | 设计 8 第 2 点的加载、`plugin.use`、`"-*"`、`/etc/profile.d` | `test/system/`（`bun run test:system`），在一次性容器中改写 `/etc` |
 | 手工试用 | 真实模型下的拦截、审批与模式切换 | [手工试用指南](./opencode-safety-policy-manual-test.md)，在各阶段 E2E 和升级 OpenCode 后执行 |
 
 - 每次升级 OpenCode 版本：重跑 `bun run test:e2e` 和 Spike S3–S9，并按手工试用指南走一遍，通过后再放宽 `peerDependencies`。
-- CI（`.github/workflows/ci.yml`）：PR 和 push 到 `main` 时跑类型检查、`bun test` 和 `bun run test:e2e`，E2E 固定用 OpenCode 2.4.1，升级 OpenCode 时同步修改。每天定时用最新版 OpenCode 跑一次 E2E，提前发现上游变更。
+- CI（`.github/workflows/ci.yml`）：PR 和 push 到 `main` 时跑类型检查、`bun test`、`bun run test:e2e` 和 `bun run test:system`，E2E 和系统级部署固定用 OpenCode 2.4.1，升级 OpenCode 时同步修改。每天定时用最新版 OpenCode 跑一次，提前发现上游变更。
 - 不写只验证常量、默认值或类型的测试。
 
 ## 12. 待决事项
@@ -458,7 +462,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 |---|---|---|
 | 包名 | P0-1 之前 | 已定：`@daocloud/opencode-safety-policy` |
 | 私有 npm 源地址与发布权限 | R-3 之前 | 未定 |
-| 系统级部署验证用的容器/VM | R-2 之前 | 未定 |
+| 系统级部署验证用的容器/VM | R-2 之前 | 已定：一次性 Docker 容器 `ubuntu:24.04`（`test/system/Dockerfile`） |
 
 ## 13. 进度清单
 
@@ -491,5 +495,5 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [x] P2-5 可选服务端 /safety
 - [ ] P2-E2E
 - [ ] R-1 README
-- [ ] R-2 系统级部署验证
+- [x] R-2 系统级部署验证
 - [ ] R-3 打包
