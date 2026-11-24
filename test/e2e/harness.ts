@@ -348,8 +348,9 @@ export class Harness {
     return (await this.rpc("status", {}, directory)).body.output.recent
   }
 
+  /** `session.create` takes the location from its payload, not from the query, and defaults to the server's cwd. */
   async session(directory = this.project): Promise<string> {
-    return (await this.api("POST", "/api/session", {}, directory)).data.id
+    return (await this.api("POST", "/api/session", { location: { directory } }, directory)).data.id
   }
 
   /**
