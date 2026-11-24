@@ -178,9 +178,11 @@
   │       < /dev/fd/N 视为管道输入。管道右侧命令参数中的 $(...)、<(...) 先于重定向展开，其内层命令
   │       同样读该管道（... | echo $(bash)）；输出进程替换 tee >(bash) 的内层命令按读管道处理。管道右侧
   │       为复合命令时组内每条命令都读该管道（... | { cat; bash; }、... | while read l; do bash; done），
-  │       coproc bash 同理
+  │       coproc bash 同理。管道左侧为字面量 echo / printf 时按静态文本处理（见 3.2）。不带命令的
+  │       exec 的 stdin 重定向作用于同一脚本中的后续命令（exec < x.sh; bash）
   │     • Heredoc / Here-string 喂 SSH（ssh host bash <<'EOF' ... EOF）
-  │     • 本地文件重定向喂 SSH（ssh host bash < script.sh）
+  │     • 本地文件重定向喂 shell 或 SSH（bash < x.sh、ssh host bash < x.sh、ssh host < x.sh）：
+  │       读入文件正文按执行位置递归分析（见 3.2）
   │     • 编码/间接执行（eval、$'\x72\x6d'、xargs rm）
   │     • 同命令先写后执行 / 本地脚本 TOCTOU（cat > /tmp/run.sh <<EOF ... && bash /tmp/run.sh）：
   │       若 execute.before 阶段目标脚本尚不存在（ENOENT）或同命令内先写入再执行，
@@ -252,8 +254,8 @@
 | **直接附带远程命令** | `ssh root@node1 "kubectl delete pod foo"` | 解析 `ssh` 参数（跳过 `-i/-p/-o/-F/-J/-l/-W` 等带值选项及无值 flag），提取 `destination` 后所有参数作为远程命令并递归回送 Stage 1，标记 `isRemote: true` |
 | **嵌套引号/多层 shell** | `ssh node1 "sudo bash -c 'rm -rf /data/*'"` | 递归剥离 `ssh` → `sudo` → `bash -c`，还原出 `rm -rf /data/*`（`isRemote: true`） |
 | **Heredoc 喂脚本** | `ssh node1 'bash -s' <<'EOF' \n rm -rf /tmp/a \n EOF` | 提取 heredoc 正文作为远端脚本递归分析，每条命令与直接附带的远程命令同等判定：命中规则按规则处置，只读白名单放行，其余在 `strict` 下 `ask` |
-| **本地文件重定向** | `ssh node1 'bash -s' < ./cleanup.sh` | 检查本地文件路径，在允许读取范围内读入内容并递归扫描；不可读或含高危命令直接 `deny`，否则 `ask` |
-| **上游静态文本管道** | `echo "docker stop app" \| ssh node1 sh` | 解析上游字面量文本并递归分析；命中高危直接 `deny` |
+| **本地文件重定向** | `ssh node1 'bash -s' < ./cleanup.sh` | 本机 `<` 重定向喂给 shell 或 `ssh` 执行的文件在分析时读入。允许读取范围是不超过 64 KiB 的普通文件，FIFO、设备、目录、不存在或无权限的文件视为不可读，`/dev/null` 视为空输入；相对路径按候选工作目录解析。所有候选都不可读时按 fail-closed 处理（`strict` 下 `deny`，`relaxed` 下 `ask`）。可读时正文按执行位置递归分析（`ssh` 为远端），命中规则按规则处置；文件在执行前可能被改写，其余情况在 `strict`、`relaxed` 下均 `ask`。远端命令里的 `<` 指向远端文件，按远端未知命令处理；解释器（`python3 < x.py`）由 Stage 3.5 预扫 |
+| **上游静态文本管道** | `echo "docker stop app" \| ssh node1 sh` | 管道左侧为单个字面量 `echo` / `printf` 时，其输出等同 here-string，与 heredoc 同等判定，命中高危直接 `deny`。`echo` 参数含反斜杠或以 `-` 开头（`-n`/`-e`/`-E` 除外），`printf` 带选项、含 `%s`/`%%` 以外的转换或 POSIX 单字符转义以外的转义（含八进制），输出超过 64 KiB，或左侧为复合命令、含展开或重定向时，按不可静态分析的管道处理 |
 | **不可静态分析的管道/动态流** | `curl -s ... \| ssh node1 sh`、`base64 -d \| ssh node1 sh` | 标记 `opaqueRemoteStdin`，遵循 **fail-closed**：`strict` 下直接 `deny`，`relaxed` 下强制 `ask` |
 | **SSH 远端执行未知脚本** | `ssh node1 /opt/ops/reset.sh` | 标记 `unknownRemoteCommand`：`strict` 下非只读白名单一律 `ask`（或对高危路径/名称 `deny`） |
 | **文件同步/覆盖（破坏性）** | `rsync --delete ...`、`scp ... root@node:/etc/...` | 命中 `--delete` 或系统关键路径覆盖规则，按 `deny` / `ask` 处置 |
