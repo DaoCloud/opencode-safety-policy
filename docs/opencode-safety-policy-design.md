@@ -106,7 +106,7 @@
                                           ▼
                             ┌──────────────────────────┐
                             │    AuditLogger（可选）     │
-                            │ 记录拦截/放行/模式切换日志  │
+                            │ 记录拒绝/需确认/模式切换    │
                             └──────────────────────────┘
 ```
 
@@ -502,7 +502,7 @@ opencode-safety-policy/       # 仓库根目录
 │   ├── stats.ts              # 最近拦截统计：每次 deny/ask 追加一条 ctx.storage 记录，status 汇总最近 24 小时
 │   ├── report.ts             # /safety test 与 cli.ts 共用的结果文本格式化（无运行时依赖，供 TUI 引入）
 │   ├── command.ts            # 可选降级服务端 /safety Slash Command（默认关闭，仅无 TUI 场景按需开启）
-│   └── audit.ts              # 结构化 JSONL 审计日志（写入 ~/.local/state/opencode/ 或自定义路径）
+│   └── audit.ts              # 结构化 JSONL 审计日志（配置 auditLogPath 后写入）
 └── test/
     ├── helpers/
     │   └── fake-context.ts   # 模拟 Plugin Context（hook 注册、storage、permission.assert、rpc.register）
@@ -593,6 +593,13 @@ opencode-safety-policy/       # 仓库根目录
   ]
 }
 ```
+
+`auditLogPath` 配置后才写审计日志。格式为 JSONL，一行一个事件，文件不存在时以 `0600` 权限创建，上级目录不会自动创建。记录两类事件：
+
+- `deny`、`ask`：插件的每次拒绝和需确认，口径与 `/safety status` 的统计相同。字段有 `time`（ISO 8601）、`event`、`ruleId`、`reason`、`sessionID`、`directory`（插件实例所在 Location 的目录）、`input`，以及 `callID`、`tool`/`permission`、`workdir`。`execute.before` 产生的事件带 `tool`，`input` 是 shell 命令或其他工具的 JSON 参数，shell 带 `workdir` 时一并记录。evaluate 产生的事件带 `permission`（权限 action），`input` 是 resources 按行拼接。
+- `mode`：经 RPC 成功切换模式时记录 `mode` 与 `ttlMs`。TTL 到期和环境变量锁定不记录。
+
+放行的调用和用户对审批的答复不记录。`input` 超过 4096 个字符时截断。命令中可能含有凭据，`0600` 只能防止其他用户读取。写入失败（路径不可写、上级目录不存在等）直接忽略，不影响判定。
 
 `protectedEndpoints` 的三个键只用于分类，判定相同。每项是 IP（`10.20.0.10`、`fd00::1`）、CIDR（`10.10.0.0/16`、`fd00::/64`）或主机名（按字面比对，不支持通配符），不能带端口、路径或用户名。IPv4 条目也匹配 `::ffff:` 映射地址；`curl http://167772161/` 等非常规写法会先按 WHATWG URL 规范化为点分 IPv4 再比对。
 

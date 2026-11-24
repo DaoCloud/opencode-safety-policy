@@ -392,7 +392,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### P2-4 审计日志
 
 - 设计：6（`audit.ts`）、7（`auditLogPath`）
-- 要点：输出 JSONL，每次 `deny`/`ask` 记一条。写入失败不影响决策。
+- 要点：只在配置 `auditLogPath` 时输出 JSONL，每次 `deny`/`ask` 和每次模式切换记一条，字段见设计 7。写入失败不影响决策。
 - commit：`feat: add jsonl audit log`
 
 ### P2-5 可选服务端 /safety（默认关闭）
