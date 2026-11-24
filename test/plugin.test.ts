@@ -2,12 +2,15 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import plugin from "../index"
+import definition from "../rpc"
 import { registerPermissionHook } from "../src/hooks/permission"
 import { createMarkers, MARKER_TTL_MS, registerToolHooks } from "../src/hooks/tool"
 import { createPolicy, type Policy } from "../src/policy"
 import type { CompiledRule } from "../src/rules/matcher"
 import { PLUGIN_DIR } from "../src/rules/self-protect"
-import { MODE_ENV } from "../src/state"
+import { createRpcHandlers } from "../src/rpc-handlers"
+import { createModeState, LOCK_ENV, MODE_ENV } from "../src/state"
 import type { Mode } from "../src/types"
 import { fakeContext } from "./helpers/fake-context"
 
@@ -284,5 +287,81 @@ describe("self-protection", () => {
     expect(event).toMatchObject({ effect: "deny", message: expect.stringMatching(/^\[safety-policy:config-error\] .*mode/) })
     const off = await setup({ options: { mode: "bogus" }, mode: "off" })
     expect((await off.evaluate({ action: "edit", resources: ["opencode.json"] })).effect).toBe("allow")
+  })
+})
+
+describe("entry", () => {
+  async function load(options: Record<string, unknown> = {}) {
+    const fake = fakeContext({ options })
+    await plugin.setup(fake.ctx)
+    return { ...fake, rpc: (method: string, input: unknown) => fake.call(definition.id, method, input) }
+  }
+
+  test("registers the hooks and the rpc", async () => {
+    const s = await load()
+    expect([...s.hooks.keys()].sort()).toEqual(["permission.evaluate", "tool.execute.after", "tool.execute.before"])
+    expect(s.rpcs.map((item) => item.definition.id)).toEqual(["opencode-safety-policy"])
+  })
+
+  test("the hooks share markers and follow the mode set over rpc", async () => {
+    const s = await load()
+    await s.rpc("setMode", { mode: "strict" })
+    await expect(s.fire("tool.execute.before", call("shell", { command: "rm -rf /etc" }))).rejects.toThrow("[safety-policy:rm-system-path]")
+    const event = call("shell", { command: "rm /tmp/x" })
+    await s.fire("tool.execute.before", event)
+    const evaluation = {
+      sessionID: "ses_1",
+      agent: "build",
+      action: "shell",
+      resources: ["rm /tmp/x"],
+      effect: "allow",
+      source: { type: "tool", messageID: "msg_1", id: event.id },
+    }
+    await s.fire("permission.evaluate", evaluation)
+    expect(evaluation.effect).toBe("ask")
+    await s.rpc("setMode", { mode: "off" })
+    await s.fire("tool.execute.before", call("shell", { command: "rm -rf /var" }))
+  })
+
+  test("passes the options to the policy", async () => {
+    const s = await load({ mode: "bogus" })
+    await s.rpc("setMode", { mode: "strict" })
+    await expect(s.fire("tool.execute.before", call("shell", { command: "ls" }))).rejects.toThrow("[safety-policy:config-error]")
+  })
+})
+
+describe("rpc", () => {
+  async function setupRpc(env: Record<string, string> = {}) {
+    const fake = fakeContext()
+    const clock = { t: 1_000_000 }
+    const mode = createModeState({ storage: fake.ctx.storage, env, now: () => clock.t })
+    await fake.ctx.rpc.register(definition, createRpcHandlers(mode))
+    return { ...fake, clock, rpc: (method: string, input: unknown) => fake.call(definition.id, method, input) }
+  }
+
+  test("status reports the mode without an expiry", async () => {
+    const s = await setupRpc()
+    expect(await s.rpc("status", {})).toStrictEqual({ mode: "strict", source: "default", locked: false })
+  })
+
+  test("setMode returns the new status and a TTL falls back", async () => {
+    const s = await setupRpc({ [MODE_ENV]: "relaxed" })
+    const expiresAt = s.clock.t + 60_000
+    expect(await s.rpc("setMode", { mode: "off", ttlMs: 60_000 })).toStrictEqual({ mode: "off", source: "runtime", locked: false, expiresAt })
+    expect(await s.rpc("status", {})).toStrictEqual({ mode: "off", source: "runtime", locked: false, expiresAt })
+    s.clock.t = expiresAt
+    expect(await s.rpc("status", {})).toStrictEqual({ mode: "relaxed", source: "env", locked: false })
+    expect(await s.rpc("setMode", { mode: "strict" })).toStrictEqual({ mode: "strict", source: "runtime", locked: false })
+  })
+
+  test("setMode is refused with a declared error under the lock", async () => {
+    const s = await setupRpc({ [LOCK_ENV]: "strict" })
+    await expect(s.rpc("setMode", { mode: "off" })).rejects.toEqual({
+      type: "locked",
+      message: expect.stringContaining(LOCK_ENV),
+      data: { mode: "strict" },
+    })
+    expect(s.data.size).toBe(0)
+    expect(await s.rpc("status", {})).toStrictEqual({ mode: "strict", source: "lock", locked: true })
   })
 })

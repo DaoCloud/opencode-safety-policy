@@ -5,10 +5,12 @@
   "type": "module",
   "exports": {
     ".": "./index.ts",
-    "./server": "./index.ts"
+    "./server": "./index.ts",
+    "./rpc": "./rpc.ts"
   },
   "files": [
     "index.ts",
+    "rpc.ts",
     "rules",
     "src"
   ],

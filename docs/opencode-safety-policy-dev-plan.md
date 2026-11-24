@@ -444,7 +444,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [x] P0-8 Analyzer 与 SSH 策略
 - [x] P0-9 execute.before Hook
 - [x] P0-10 evaluate Hook 与基础自保护
-- [ ] P0-11 Server 入口与 RPC
+- [x] P0-11 Server 入口与 RPC
 - [ ] P0-12 TUI 入口
 - [ ] P0-E2E
 - [ ] P1-1 Opaque / 混淆检测

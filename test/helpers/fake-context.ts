@@ -1,14 +1,24 @@
 /** A minimal plugin context for hook tests; no OpenCode runtime. Only the members used by the plugin are real. */
 
-import type { Plugin } from "@opencode/plugin"
+import type { Plugin, Rpc } from "@opencode/plugin"
 
 type Callback = (event: any) => Promise<void> | void
 type AssertInput = Parameters<Plugin.Context["permission"]["assert"]>[0]
+type Handler = (input: unknown, context: unknown) => Promise<unknown>
+
+class ReturnedError {
+  constructor(
+    readonly type: string,
+    readonly message: string,
+    readonly data?: unknown,
+  ) {}
+}
 
 export function fakeContext(init: { directory?: string; options?: Record<string, unknown> } = {}) {
   const hooks = new Map<string, Callback[]>()
   const data = new Map<string, unknown>()
   const asserts: AssertInput[] = []
+  const rpcs: Array<{ definition: Rpc.PortableDefinition; handlers: Record<string, Handler> }> = []
   /** Set to make `permission.assert` reject with it. */
   const control: { assertError?: unknown } = {}
 
@@ -34,6 +44,12 @@ export function fakeContext(init: { directory?: string; options?: Record<string,
         if (control.assertError !== undefined) throw control.assertError
       },
     },
+    rpc: {
+      register: async (definition: Rpc.PortableDefinition, handlers: Record<string, Handler>) => {
+        rpcs.push({ definition, handlers })
+        return { dispose: async () => {}, events: { emit: async () => {} } }
+      },
+    },
   } as unknown as Plugin.Context
 
   /** Runs the callbacks registered for `<domain>.<name>` in order, like OpenCode. */
@@ -41,5 +57,20 @@ export function fakeContext(init: { directory?: string; options?: Record<string,
     for (const callback of hooks.get(name) ?? []) await callback(event)
   }
 
-  return { ctx, hooks, data, asserts, control, fire }
+  /**
+   * Calls an RPC method like OpenCode and its client: the latest registration wins, a returned error must be declared
+   * by the method, and the call rejects with `{ type, message, data }`.
+   */
+  async function call(rpcID: string, method: string, input: unknown) {
+    const entry = rpcs.findLast((item) => item.definition.id === rpcID)
+    const handler = entry?.handlers[method]
+    if (!entry || !handler) throw new Error(`unknown rpc ${rpcID}.${method}`)
+    const error = (type: string, message: string, data?: unknown) => new ReturnedError(type, message, data)
+    const result = await handler(input, { signal: new AbortController().signal, error })
+    if (!(result instanceof ReturnedError)) return result
+    if (!Object.hasOwn(entry.definition.methods[method]?.errors ?? {}, result.type)) throw new Error(`Undeclared RPC error: ${result.type}`)
+    throw { type: result.type, message: result.message, data: result.data }
+  }
+
+  return { ctx, hooks, data, asserts, control, rpcs, fire, call }
 }
