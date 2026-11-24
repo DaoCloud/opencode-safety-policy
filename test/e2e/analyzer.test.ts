@@ -72,6 +72,10 @@ const denied: [string, string][] = [
   ["python3 missing.py", "opaque"],
   // P1-3: HTTP writes to Redfish, UFM and protected endpoints, with bodies and curl configs read from real files.
   ["curl -X PATCH -d {} https://bmc1/redfish/v1/Managers/1/VirtualMedia/CD", "redfish-virtual-media"],
+  [
+    "curl -X POST https://bmc1/redfish/v1/Managers/1/VirtualMedia/CD/Actions/VirtualMedia.InsertMedia -d '{}'",
+    "redfish-virtual-media",
+  ],
   ["curl -X PATCH https://bmc1/redfish/v1/Systems/1 -d @boot.json", "redfish-boot-override"],
   ["curl -X POST http://127.0.0.2:9/x", "protected-endpoint-write"],
   ["curl -K post.cfg", "protected-endpoint-write"],
