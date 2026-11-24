@@ -62,8 +62,9 @@
 - 模型：本地 mock LLM（OpenAI 兼容，`providers.mock` 用 `@opencode/ai/providers/openai-compatible`，`baseURL` 指向本机端口），把用户消息中的 `@@CALL <tool> <json>` 依次转成工具调用，不需要真实模型凭据。实现见 Spike 产物 `/tmp/ocsp-spike/mock-llm.ts`。
 - 驱动方式：
   - `opencode run --standalone '<消息>'`：非交互，审批自动拒绝，适合验证 deny 与“弹出审批”。
-  - `opencode serve --hostname 127.0.0.1 --port <p>` + HTTP API（Basic 认证，用户名 `opencode`，密码见启动日志）：`GET /api/session/:id/permission` 查询审批，`POST /api/session/:id/permission/:requestID/reply` 回复 `once`/`always`/`reject`，`POST /api/rpc/:rpcID/:method` 调用插件 RPC。
+  - `opencode serve --hostname 127.0.0.1 --port <p>` + HTTP API（Basic 认证，用户名 `opencode`，密码见启动日志）：`GET /api/session/:id/permission` 查询审批，`POST /api/session/:id/permission/:requestID/reply` 回复 `once`/`always`/`reject`，`POST /api/rpc/:rpcID/:method` 调用插件 RPC，请求体为 `{ "input": ... }`。插件按 Location 懒加载，对新目录的第一次请求可能返回 `rpc.unavailable`，稍后重试即可。
   - TUI：`opencode --standalone <dir>`，用 pty + `pyte` 驱动或手测。
+- 替身命令：拦截失效时命令会真实执行，所以 E2E 前把 `rm`、`kubectl`、`docker`、`ssh`、`nv` 等替身脚本放到 `PATH` 最前，替身只打印参数。规则按命令名判定，替身不影响结果。
 - 不修改 `/etc/opencode` 和个人 `~/.config/opencode`（本机为共享环境）。系统级部署放到 R-2，在容器或 VM 中验证。
 - Code Mode 嵌套调用 shell 需要 `OPENCODE_FLAGS=full_codemode`。该 flag 只能显式开启，也可以在配置里写 `experimental.full_codemode: true`。
 
@@ -271,17 +272,17 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 
 在隔离环境中用 mock LLM 逐项验证（驱动方式见第 4 节，TUI 项用 pty 驱动或手测），失败项先修复（`fix:` commit）再重测。
 
-- [ ] 本机 `rm -rf /data`、`shell({ workdir: "/", command: "rm -rf etc" })`、`kubectl delete`、`docker stop`、`opencode_worktree_remove(force: true)` 被拦截
-- [ ] `/tmp` 下的常规 `rm` 只弹一次内置审批，直调和 `full_codemode` 两种场景都要测
-- [ ] Desktop/Web App 的审批弹窗显示规则原因
-- [ ] TUI 中被强制审批时，弹 Toast 显示规则原因
-- [ ] 点 `Always` 后再次执行同一命令，仍弹窗
-- [ ] Code Mode 中被拒绝的调用不会执行，即使沙箱代码 `try/catch` 了错误
-- [ ] `ssh host "kubectl delete ..."`、`ssh sw "nv config apply"` 被拦截
-- [ ] `/safety relaxed --ttl 1m` 生效，到期自动回落
-- [ ] `/safety status` 的结果跨重启、跨 Session、跨多个工作目录一致
-- [ ] 全程没有 `session_inbox` 残留，没有幽灵 LLM 回合
-- [ ] 设置 `OPENCODE_SAFETY_LOCK_MODE` 后，`/safety off` 被拒绝
+- [x] 本机 `rm -rf /data`、`shell({ workdir: "/", command: "rm -rf etc" })`、`kubectl delete`、`docker stop`、`opencode_worktree_remove(force: true)` 被拦截
+- [x] `/tmp` 下的常规 `rm` 只弹一次内置审批，直调和 `full_codemode` 两种场景都要测
+- [x] Desktop/Web App 的审批弹窗显示规则原因（HTTP API 返回的审批带 `message`，前端 `session-permission-dock.tsx` 渲染该字段，未在浏览器中实测）
+- [x] TUI 中被强制审批时，弹 Toast 显示规则原因
+- [x] 点 `Always` 后再次执行同一命令，仍弹窗
+- [x] Code Mode 中被拒绝的调用不会执行，即使沙箱代码 `try/catch` 了错误
+- [x] `ssh host "kubectl delete ..."`、`ssh sw "nv config apply"` 被拦截
+- [x] `/safety relaxed --ttl 1m` 生效，到期自动回落
+- [x] `/safety status` 的结果跨重启、跨 Session、跨多个工作目录一致
+- [x] 全程没有 `session_inbox` 残留，没有幽灵 LLM 回合
+- [x] 设置 `OPENCODE_SAFETY_LOCK_MODE` 后，`/safety off` 被拒绝
 
 全部通过后，可打本地 tag `v0.1.0`（不 push）。
 
@@ -447,7 +448,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [x] P0-10 evaluate Hook 与基础自保护
 - [x] P0-11 Server 入口与 RPC
 - [x] P0-12 TUI 入口
-- [ ] P0-E2E
+- [x] P0-E2E
 - [ ] P1-1 Opaque / 混淆检测
 - [ ] P1-2 SSH heredoc、管道与重定向
 - [ ] P1-3 HTTP 提取与受保护端点
