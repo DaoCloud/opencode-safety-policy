@@ -12,6 +12,7 @@
 
 import type { Plugin } from "@opencode/plugin"
 import { analyze, type Analysis } from "../analyzer"
+import type { Audit } from "../audit"
 import { active, type Loaded, type Policy } from "../policy"
 import { decide, type Verdict } from "../rules"
 import type { Stats } from "../stats"
@@ -83,6 +84,7 @@ export interface ToolHookDeps {
   policy: Policy
   markers: Markers
   stats: Stats
+  audit: Audit
 }
 
 export function registerToolHooks(ctx: Pick<Context, "tool" | "permission" | "location">, deps: ToolHookDeps): Promise<Registration[]> {
@@ -97,7 +99,7 @@ async function before(ctx: Pick<Context, "permission" | "location">, deps: ToolH
   try {
     state = await active(deps.policy)
   } catch (error) {
-    throw blocked(deps.stats, "config-error", describe(error))
+    throw blocked(deps, event, "config-error", describe(error))
   }
   if (!state) return
   const { mode, loaded } = state
@@ -111,16 +113,16 @@ async function before(ctx: Pick<Context, "permission" | "location">, deps: ToolH
       ? analyzeShell(deps.policy, state, ctx.location.directory, shell)
       : decide({ argv: [event.tool, json], isRemote: false, tool: true }, loaded.rules, mode)
   } catch (error) {
-    throw blocked(deps.stats, "policy-error", describe(error))
+    throw blocked(deps, event, "policy-error", describe(error))
   }
 
-  if (verdict.decision === "deny") throw blocked(deps.stats, verdict.ruleId, verdict.reason)
+  if (verdict.decision === "deny") throw blocked(deps, event, verdict.ruleId, verdict.reason)
   if (shell) {
     const { decision, ruleId, reason } = verdict
     deps.markers.add({ sessionID: event.sessionID, callID: event.id, command: shell.command, decision, ruleId, reason })
   }
   if (verdict.decision !== "ask") return
-  void deps.stats.record("ask", verdict.ruleId)
+  report(deps, event, "ask", verdict.ruleId, verdict.reason)
   if (shell) return
   await ctx.permission.assert({
     sessionID: event.sessionID,
@@ -150,9 +152,18 @@ export function label(ruleId = "unknown", reason = ""): string {
   return `[safety-policy:${ruleId}] ${reason}`
 }
 
-function blocked(stats: Stats, ruleId?: string, reason?: string): Error {
-  void stats.record("deny", ruleId)
+function blocked(deps: ToolHookDeps, event: BeforeEvent, ruleId?: string, reason?: string): Error {
+  report(deps, event, "deny", ruleId, reason)
   return new Error(label(ruleId, reason))
+}
+
+function report(deps: ToolHookDeps, event: BeforeEvent, decision: "deny" | "ask", ruleId = "unknown", reason = "") {
+  void deps.stats.record(decision, ruleId)
+  const shell = event.tool === "shell" ? shellInput(event.input) : undefined
+  const input = shell ? shell.command : JSON.stringify(event.input ?? {})
+  const { sessionID, tool, id: callID } = event
+  const workdir = shell?.workdir === undefined ? {} : { workdir: shell.workdir }
+  void deps.audit.write({ event: decision, ruleId, reason, sessionID, input, callID, tool, ...workdir })
 }
 
 export function describe(error: unknown): string {

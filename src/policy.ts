@@ -26,6 +26,8 @@ export interface Policy {
   readonly mode: ModeState
   /** Expands `~` and locates the global configuration. */
   readonly home: string
+  /** `options.auditLogPath`, unless the options are invalid. */
+  readonly auditLogPath?: string
   /** Current options and rules. Throws when they are invalid. */
   load(): Loaded
 }
@@ -58,6 +60,7 @@ export function createPolicy(input: PolicyInput): Policy {
   return {
     mode,
     home,
+    auditLogPath: ready?.options.auditLogPath,
     load() {
       if (!ready) throw failure
       return { options: ready.options, rules: ready.provider.get(), readOnly: ready.readOnly, protect: ready.protect }

@@ -20,6 +20,7 @@
  */
 
 import type { Plugin } from "@opencode/plugin"
+import type { Audit } from "../audit"
 import { request } from "../http-extractor"
 import { resolveCanonicalPath } from "../path-util"
 import { active, type Policy } from "../policy"
@@ -46,6 +47,7 @@ export interface PermissionHookDeps {
   policy: Policy
   markers: Markers
   stats: Stats
+  audit: Audit
 }
 
 export function registerPermissionHook(ctx: Pick<Context, "permission" | "location">, deps: PermissionHookDeps): Promise<Registration> {
@@ -83,9 +85,9 @@ async function recheck(ctx: Pick<Context, "location">, deps: PermissionHookDeps,
     try {
       verdict = analyzeShell(deps.policy, state, ctx.location.directory, { command })
     } catch (error) {
-      return deny(deps.stats, event, "policy-error", describe(error))
+      return deny(deps, event, "policy-error", describe(error))
     }
-    if (verdict.decision === "deny") return deny(deps.stats, event, verdict.ruleId, verdict.reason)
+    if (verdict.decision === "deny") return deny(deps, event, verdict.ruleId, verdict.reason)
   }
 }
 
@@ -95,8 +97,8 @@ async function protectFiles(ctx: Pick<Context, "location">, deps: PermissionHook
   const protect = state.loaded.protect
   for (const resource of event.resources) {
     const target = resolveCanonicalPath(resource, ctx.location.directory, deps.policy.home)
-    if (isSecret(target, protect)) return deny(deps.stats, event, "self-protect", secretVerdict(target).reason)
-    if (isProtected(target, protect)) return deny(deps.stats, event, "self-protect", selfProtectVerdict(target).reason)
+    if (isSecret(target, protect)) return deny(deps, event, "self-protect", secretVerdict(target).reason)
+    if (isProtected(target, protect)) return deny(deps, event, "self-protect", selfProtectVerdict(target).reason)
   }
 }
 
@@ -111,7 +113,7 @@ async function protectSecrets(
   for (const p of paths) {
     const target = resolveCanonicalPath(p, ctx.location.directory, deps.policy.home)
     if (!isSecret(target, state.loaded.protect)) continue
-    return deny(deps.stats, event, "self-protect", secretVerdict(target).reason)
+    return deny(deps, event, "self-protect", secretVerdict(target).reason)
   }
 }
 
@@ -124,10 +126,10 @@ async function protectEndpoints(deps: PermissionHookDeps, event: Evaluation) {
   const state = await enforced(deps, event)
   if (!state) return
   const api = serverApiRequest(http, state.loaded.protect.ports)
-  if (api) return deny(deps.stats, event, "self-protect", serverApiVerdict(api).reason)
+  if (api) return deny(deps, event, "self-protect", serverApiVerdict(api).reason)
   if (!write || state.mode === "off") return
   const verdict = decide({ argv: [], isRemote: false, http }, state.loaded.rules, "strict")
-  if (verdict.decision !== "allow") deny(deps.stats, event, verdict.ruleId!, verdict.reason!)
+  if (verdict.decision !== "allow") deny(deps, event, verdict.ruleId!, verdict.reason!)
 }
 
 /** The policy the hooks enforce now; a config error denies the event and returns `undefined`. */
@@ -135,13 +137,17 @@ async function enforced(deps: PermissionHookDeps, event: Evaluation) {
   try {
     return await active(deps.policy)
   } catch (error) {
-    deny(deps.stats, event, "config-error", describe(error))
+    deny(deps, event, "config-error", describe(error))
   }
 }
 
-/** Shell asks are counted by `execute.before`, so only denies are recorded here. */
-function deny(stats: Stats, event: Evaluation, ruleId?: string, reason?: string) {
-  void stats.record("deny", ruleId)
+/** Asks are recorded by `execute.before`, so only denies are recorded here. */
+function deny(deps: PermissionHookDeps, event: Evaluation, ruleId = "unknown", reason = "") {
+  void deps.stats.record("deny", ruleId)
+  const { sessionID, action: permission } = event
+  const input = event.resources.join("\n")
+  const callID = event.source ? { callID: event.source.id } : {}
+  void deps.audit.write({ event: "deny", ruleId, reason, sessionID, input, permission, ...callID })
   set(event, "deny", label(ruleId, reason))
 }
 

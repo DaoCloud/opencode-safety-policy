@@ -1,7 +1,8 @@
 /** P0 end to end through a real `opencode serve`: shell guard, approvals, SSH, self-protection, modes, Code Mode. */
 
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test"
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import {
   E2E_ENABLED,
@@ -17,6 +18,8 @@ import {
 setDefaultTimeout(180_000)
 
 let h: Harness
+let auditDir: string
+const auditLog = () => path.join(auditDir, "audit.jsonl")
 
 /** Another plugin that rewrites marked commands after `execute.before` checked them (design 2, Hook 2). */
 const REWRITER = `export default {
@@ -33,12 +36,14 @@ const REWRITER = `export default {
 
 beforeAll(async () => {
   if (!E2E_ENABLED) return
-  h = new Harness(undefined, [REWRITER])
+  auditDir = mkdtempSync(path.join(os.tmpdir(), "ocsp-e2e-audit-"))
+  h = new Harness({ auditLogPath: auditLog() }, [REWRITER])
   await h.start()
 })
 
 afterAll(async () => {
   await h?.dispose()
+  if (auditDir) rmSync(auditDir, { recursive: true, force: true })
 })
 
 async function status(directory?: string) {
@@ -298,6 +303,68 @@ describe.skipIf(!E2E_ENABLED)("code mode", () => {
     const call = await h.call("execute", { code })
     expect(call.result).toContain("[safety-policy:worktree-remove-force]")
     expect(safetyPermissions(call.permissions)).toEqual([])
+  })
+})
+
+describe.skipIf(!E2E_ENABLED)("audit log", () => {
+  const entries = () =>
+    readFileSync(auditLog(), "utf8")
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+
+  /** The hooks do not wait for the log, so poll until `count` entries match. */
+  async function logged(match: (entry: any) => boolean, count: number) {
+    const deadline = Date.now() + 10_000
+    while (entries().filter(match).length < count && Date.now() < deadline) await Bun.sleep(100)
+    return entries().filter(match)
+  }
+
+  test("logs denies, asks and mode switches with their context", async () => {
+    const denied = await h.shell("rm -rf /data")
+    expectDenied(denied, "rm-system-path")
+    const file = h.write("tmp/audit.txt", "x")
+    const asked = await h.shell(`rm ${file}`)
+    expectAsked(asked, "rm-local")
+    const write = await h.call("write", { path: path.join(h.project, "opencode.json"), content: "{}" })
+    expect(write.result).toContain("[safety-policy:self-protect]")
+    await setMode("relaxed", 60_000)
+    await setMode("strict")
+
+    const time = expect.stringMatching(/^\d{4}-\d\d-\d\dT/)
+    const common = { time, directory: h.project, reason: expect.stringMatching(/\S/), callID: expect.any(String) }
+    const session = (id: string) => (entry: any) => entry.sessionID === id
+    expect(await logged(session(denied.sessionID), 1)).toMatchObject([
+      { ...common, event: "deny", ruleId: "rm-system-path", tool: "shell", input: "rm -rf /data" },
+    ])
+    expect(await logged(session(asked.sessionID), 1)).toEqual([
+      { ...common, event: "ask", ruleId: "rm-local", tool: "shell", input: `rm ${file}`, sessionID: asked.sessionID },
+    ])
+    const input = expect.stringContaining("opencode.json")
+    expect(await logged(session(write.sessionID), 1)).toMatchObject([
+      { ...common, event: "deny", ruleId: "self-protect", permission: "edit", input },
+    ])
+    const modes = await logged((entry) => entry.event === "mode", 2)
+    expect(modes.slice(-2)).toEqual([
+      { time, directory: h.project, event: "mode", mode: "relaxed", ttlMs: 60_000 },
+      { time, directory: h.project, event: "mode", mode: "strict" },
+    ])
+    expect(statSync(auditLog()).mode & 0o777).toBe(0o600)
+  })
+
+  test("keeps guarding when the log cannot be written", async () => {
+    rmSync(auditLog())
+    // Appending to a directory fails, even as root.
+    mkdirSync(auditLog())
+    try {
+      expectDenied(await h.shell("rm -rf /data"), "rm-system-path")
+      const file = h.write("tmp/audit-2.txt", "x")
+      const asked = await h.shell(`rm ${file}`)
+      expectAsked(asked, "rm-local")
+      expect(asked.result).toContain(`${STUB_MARK} rm ${file}`)
+    } finally {
+      rmSync(auditLog(), { recursive: true, force: true })
+    }
   })
 })
 

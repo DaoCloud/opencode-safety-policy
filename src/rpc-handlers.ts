@@ -4,6 +4,7 @@ import type { Rpc } from "@opencode/plugin"
 import type definition from "../rpc"
 import type { Locked, SetModeInput, Status, TestInput, TestResult } from "../rpc"
 import type { Analysis } from "./analyzer"
+import type { Audit } from "./audit"
 import { analyzeShell, describe } from "./hooks/tool"
 import { active, type Policy } from "./policy"
 import { LOCK_ENV, type ResolvedMode } from "./state"
@@ -15,11 +16,12 @@ type Methods = (typeof definition)["methods"]
 export interface RpcDeps {
   policy: Policy
   stats: Stats
+  audit: Audit
   /** The directory of the plugin instance's Location. */
   directory: string
 }
 
-export function createRpcHandlers({ policy, stats, directory }: RpcDeps) {
+export function createRpcHandlers({ policy, stats, audit, directory }: RpcDeps) {
   const state = policy.mode
   return {
     async status(): Promise<Status> {
@@ -36,6 +38,7 @@ export function createRpcHandlers({ policy, stats, directory }: RpcDeps) {
         return context.error("locked", `安全模式已被 ${LOCK_ENV} 锁定为 ${current.mode}，不能切换`, data)
       }
       await state.setMode(mode, { ttlMs })
+      void audit.write(ttlMs === undefined ? { event: "mode", mode } : { event: "mode", mode, ttlMs })
       return toStatus(await state.resolve())
     },
 

@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import plugin from "../index"
 import definition from "../rpc"
+import { createAudit, type Audit } from "../src/audit"
 import { registerPermissionHook } from "../src/hooks/permission"
 import { createMarkers, MARKER_TTL_MS, registerToolHooks } from "../src/hooks/tool"
 import { createPolicy, type Policy } from "../src/policy"
@@ -42,6 +43,23 @@ interface Evaluation {
   source?: { type: "tool"; messageID: string; id: string }
 }
 
+/** An audit log whose pending writes can be awaited. */
+function tracked(audit: Audit) {
+  const pending: Promise<void>[] = []
+  return {
+    write(entry: Parameters<Audit["write"]>[0]) {
+      const done = audit.write(entry)
+      pending.push(done)
+      return done
+    },
+    settled: () => Promise.all(pending),
+  }
+}
+
+function auditLines(file: string) {
+  return readFileSync(file, "utf8").trimEnd().split("\n").map((line) => JSON.parse(line))
+}
+
 async function setup(init: { options?: unknown; mode?: Mode; policy?: Policy; directory?: string; home?: string } = {}) {
   const fake = fakeContext({ directory: init.directory })
   const clock = { t: 1_000_000 }
@@ -50,13 +68,15 @@ async function setup(init: { options?: unknown; mode?: Mode; policy?: Policy; di
   const policy = init.policy ?? createPolicy({ options: init.options ?? {}, storage: fake.ctx.storage, env, home, now: () => clock.t })
   const markers = createMarkers(() => clock.t)
   const stats = createStats(fake.ctx.storage, () => clock.t)
-  await registerToolHooks(fake.ctx, { policy, markers, stats })
-  await registerPermissionHook(fake.ctx, { policy, markers, stats })
+  const audit = tracked(createAudit(policy.auditLogPath, fake.ctx.location.directory, () => clock.t))
+  await registerToolHooks(fake.ctx, { policy, markers, stats, audit })
+  await registerPermissionHook(fake.ctx, { policy, markers, stats, audit })
   return {
     ...fake,
     clock,
     markers,
     stats,
+    audit,
     before: (event: Call) => fake.fire("tool.execute.before", event),
     after: (event: Call) => fake.fire("tool.execute.after", { ...event, status: "completed", result: { output: "" } }),
     /** Fires `permission.evaluate` like OpenCode after the saved rules allowed the request, and returns the event. */
@@ -486,10 +506,12 @@ describe("rpc", () => {
     const clock = { t: 1_000_000 }
     const policy = createPolicy({ options, storage: fake.ctx.storage, env, home: "/home/u", now: () => clock.t })
     const stats = createStats(fake.ctx.storage, () => clock.t)
-    await fake.ctx.rpc.register(definition, createRpcHandlers({ policy, stats, directory: fake.ctx.location.directory }))
+    const audit = tracked(createAudit(policy.auditLogPath, fake.ctx.location.directory, () => clock.t))
+    const directory = fake.ctx.location.directory
+    await fake.ctx.rpc.register(definition, createRpcHandlers({ policy, stats, audit, directory }))
     const blocks = () => [...fake.data.keys()].filter((key) => key.startsWith(BLOCK_PREFIX))
     const rpc = (method: string, input: unknown) => fake.call(definition.id, method, input)
-    return { ...fake, clock, stats, blocks, rpc }
+    return { ...fake, clock, stats, audit, blocks, rpc }
   }
 
   test("status reports the mode without an expiry", async () => {
@@ -506,6 +528,21 @@ describe("rpc", () => {
     s.clock.t = expiresAt
     expect(await s.rpc("status", {})).toStrictEqual({ mode: "relaxed", source: "env", locked: false, recent: NONE })
     expect(await s.rpc("setMode", { mode: "strict" })).toStrictEqual({ mode: "strict", source: "runtime", locked: false })
+  })
+
+  test("setMode is audited, a refused one is not", async () => {
+    const file = path.join(root, "audit-mode.jsonl")
+    const s = await setupRpc({}, { auditLogPath: file })
+    await s.rpc("setMode", { mode: "off", ttlMs: 60_000 })
+    await s.rpc("setMode", { mode: "strict" })
+    const locked = await setupRpc({ [LOCK_ENV]: "strict" }, { auditLogPath: file })
+    await expect(locked.rpc("setMode", { mode: "off" })).rejects.toMatchObject({ type: "locked" })
+    await Promise.all([s.audit.settled(), locked.audit.settled()])
+    const common = { time: new Date(s.clock.t).toISOString(), directory: s.ctx.location.directory }
+    expect(auditLines(file)).toEqual([
+      { ...common, event: "mode", mode: "off", ttlMs: 60_000 },
+      { ...common, event: "mode", mode: "strict" },
+    ])
   })
 
   test("setMode is refused with a declared error under the lock", async () => {
@@ -572,6 +609,72 @@ describe("rpc", () => {
     })
     await s.rpc("setMode", { mode: "off" })
     expect(await s.rpc("test", { command: "rm -rf /data" })).toStrictEqual({ mode: "off", decision: "allow", atoms: [] })
+  })
+})
+
+describe("audit", () => {
+  const source = (id: string) => ({ type: "tool" as const, messageID: "msg_1", id })
+
+  test("logs each deny and ask with its context, and no allowed call", async () => {
+    const file = path.join(root, "audit-hooks.jsonl")
+    const s = await setup({ options: { auditLogPath: file } })
+    const rm = call("shell", { command: "rm -rf /data" })
+    await expect(s.before(rm)).rejects.toThrow("[safety-policy:rm-system-path]")
+    const ask = call("shell", { command: "rm /tmp/x", workdir: "/tmp" })
+    await s.before(ask)
+    await s.before(call("shell", { command: "ls" }))
+    const marked = { action: "shell", resources: ["rm /tmp/x"], source: source(ask.id) }
+    expect((await s.evaluate(marked)).effect).toBe("ask")
+    const edit = { action: "edit", resources: ["src/a.ts", "opencode.json"], source: source("call_edit") }
+    expect((await s.evaluate(edit)).effect).toBe("deny")
+    const secret = "/home/u/.config/opencode/service.json"
+    expect((await s.evaluate({ action: "read", resources: [secret] })).effect).toBe("deny")
+    await s.audit.settled()
+    const common = { time: new Date(s.clock.t).toISOString(), sessionID: "ses_1", directory: s.ctx.location.directory }
+    const reason = expect.stringMatching(/\S/)
+    const protect = { ...common, event: "deny", ruleId: "self-protect", reason }
+    const shell = { ...common, reason, tool: "shell" }
+    expect(auditLines(file)).toEqual([
+      { ...shell, event: "deny", ruleId: "rm-system-path", input: "rm -rf /data", callID: rm.id },
+      { ...shell, event: "ask", ruleId: "rm-local", input: "rm /tmp/x", callID: ask.id, workdir: "/tmp" },
+      { ...protect, input: "src/a.ts\nopencode.json", permission: "edit", callID: "call_edit" },
+      { ...protect, input: secret, permission: "read" },
+    ])
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+  })
+
+  test("logs non-shell tools with their JSON input, and config errors", async () => {
+    const file = path.join(root, "audit-tools.jsonl")
+    const relaxed = await setup({ mode: "relaxed", options: { auditLogPath: file } })
+    const remove = call("opencode_worktree_remove", { directory: "/repo/wt", force: true })
+    await relaxed.before(remove)
+    await relaxed.audit.settled()
+    const input = '{"directory":"/repo/wt","force":true}'
+    expect(auditLines(file)).toMatchObject([{ event: "ask", ruleId: "worktree-remove-force", input, tool: remove.tool }])
+    const broken = await setup({ options: { auditLogPath: file, rulesFile: [path.join(root, "missing-rules.json")] } })
+    await expect(broken.before(call("shell", { command: "ls" }))).rejects.toThrow("[safety-policy:config-error]")
+    await broken.audit.settled()
+    expect(auditLines(file)[1]).toMatchObject({ event: "deny", ruleId: "config-error", input: "ls", tool: "shell" })
+  })
+
+  test("truncates a long input", async () => {
+    const file = path.join(root, "audit-long.jsonl")
+    const s = await setup({ options: { auditLogPath: file } })
+    const command = `rm -rf /data ${"x".repeat(5000)}`
+    await expect(s.before(call("shell", { command }))).rejects.toThrow()
+    await s.audit.settled()
+    expect(auditLines(file)[0].input).toBe(`${command.slice(0, 4096)}…`)
+  })
+
+  test("an unwritable log never changes a decision", async () => {
+    const s = await setup({ options: { auditLogPath: path.join(root, "missing", "audit.jsonl") } })
+    await expect(s.before(call("shell", { command: "rm -rf /data" }))).rejects.toThrow("[safety-policy:rm-system-path]")
+    const ask = call("shell", { command: "rm /tmp/x" })
+    await s.before(ask)
+    expect((await s.evaluate({ action: "shell", resources: ["rm /tmp/x"], source: source(ask.id) })).effect).toBe("ask")
+    expect((await s.evaluate({ action: "edit", resources: ["opencode.json"] })).effect).toBe("deny")
+    await s.audit.settled()
+    expect(await s.stats.recent()).toMatchObject({ deny: 2, ask: 1 })
   })
 })
 
