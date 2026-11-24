@@ -380,7 +380,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### P2-2 evaluate 的 deny 级复检
 
 - 设计：2（可选复检）、1.2（其他插件改写命令的边界）
-- 要点：`shell` 请求没有匹配到标记时，对 resources 重新分析，命中 `deny` 级规则就 `deny`。
+- 要点：`execute.before` 对放行的 shell 命令也登记标记。evaluate 中不是任何已登记命令子串的 `resources` 逐条重新分析，判定为 `deny` 时 `deny`。已检查过的切片不复检，避免脱离 `cd`/`workdir` 上下文误判。
 - commit：`feat: recheck unmarked shell permission requests`
 
 ### P2-3 TUI 展示审批原因
