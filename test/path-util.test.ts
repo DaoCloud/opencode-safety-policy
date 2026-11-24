@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { effectiveCwd, expandPathArgs, resolveCanonicalPath } from "../src/path-util"
+import { dirLinks, effectiveCwd, expandPathArgs, linkAlias, resolveCanonicalPath } from "../src/path-util"
 
 let root = ""
 let home = ""
@@ -19,6 +19,11 @@ beforeAll(() => {
   symlinkSync("real/sub", path.join(root, "rel"))
   symlinkSync("rel", path.join(root, "chain"))
   symlinkSync(path.join(home, ".config/opencode"), path.join(root, "oc"))
+  mkdirSync(path.join(root, "top/usr/bin"), { recursive: true })
+  symlinkSync("usr/bin", path.join(root, "top/bin"))
+  symlinkSync("usr", path.join(root, "top/u"))
+  symlinkSync("/", path.join(root, "top/up"))
+  symlinkSync("self", path.join(root, "top/self"))
 })
 
 afterAll(() => {
@@ -137,5 +142,55 @@ describe("expandPathArgs", () => {
 
   test("keeps dynamic arguments", () => {
     expect(expand("rm -rf $DIR/x `pwd` etc")).toEqual({ argv: ["rm", "-rf", "$DIR/x", "`pwd`", "/etc"], paths: ["/etc"] })
+  })
+
+  test("adds the arguments under a symlink to their target", () => {
+    const top = path.join(root, "top")
+    const links = dirLinks(top)
+    const run = (command: string) => {
+      const argv = command.split(" ")
+      return expandPathArgs(argv, argv.map(() => false), top, home, links)
+    }
+    expect(run("rm -rf bin/x usr")).toEqual({
+      argv: ["rm", "-rf", `${top}/usr/bin/x`, `${top}/usr`],
+      paths: [`${top}/usr/bin/x`, `${top}/usr`],
+      aliased: ["rm", "-rf", `${top}/bin/x`, `${top}/u`],
+    })
+    expect(run("dd of=bin/sda").aliased).toEqual(["dd", `of=${top}/bin/sda`])
+    expect(run("rm -rf self").aliased).toBeUndefined()
+  })
+})
+
+describe("dirLinks", () => {
+  test("lists the symlinks in a directory, longest target first, without loops or links to /", () => {
+    const top = path.join(root, "top")
+    expect(dirLinks(top)).toEqual([
+      [`${top}/bin`, `${top}/usr/bin`],
+      [`${top}/u`, `${top}/usr`],
+    ])
+  })
+
+  test("is empty for a missing directory", () => {
+    expect(dirLinks(path.join(root, "missing"))).toEqual([])
+  })
+})
+
+describe("linkAlias", () => {
+  const links = [
+    ["/bin", "/usr/bin"],
+    ["/etc", "/private/etc"],
+  ] as const
+
+  test.each([
+    ["/usr/bin", "/bin"],
+    ["/usr/bin/", "/bin/"],
+    ["/usr/bin/*", "/bin/*"],
+    ["/private/etc/hosts", "/etc/hosts"],
+  ])("%s is %s", (input, expected) => {
+    expect(linkAlias(input, links)).toBe(expected)
+  })
+
+  test.each(["/usr", "/usr/binx", "/etc", "/opt/usr/bin"])("%s has no alias", (input) => {
+    expect(linkAlias(input, links)).toBeUndefined()
   })
 })

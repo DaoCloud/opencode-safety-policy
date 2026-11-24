@@ -192,15 +192,19 @@ function expandAtoms(atoms: Atom[], dirs: Dir[], scope: Scope): Entry[] {
       const candidate = withHttp({ input: { ...base, argv: atom.argv }, guessed: false }, atom)
       return [{ atom, candidates: [candidate], dirs: known(dirs) }]
     }
-    const at = (dir: string, guessed: boolean): Candidate => {
-      const input = { ...base, argv: expandPathArgs(atom.argv, atom.expanded, dir, home).argv }
+    const at = (dir: string, guessed: boolean): Candidate[] => {
+      const { argv, aliased } = expandPathArgs(atom.argv, atom.expanded, dir, home)
       const read = (file: string) => {
         const text = scope.read(resolveCanonicalPath(file, dir, home))
         return text instanceof Error ? undefined : text
       }
-      return withHttp({ input, guessed }, atom, read)
+      // The link form goes first: rules name `/bin` and `/etc`, and a tie between candidates reports the first.
+      const inputs = (aliased ? [aliased, argv] : [argv]).map((args) => ({ ...base, argv: args }))
+      return inputs.map((input) => withHttp({ input, guessed }, atom, read))
     }
-    const candidates = atomDirs.flatMap((dir) => (dir === null ? [at(PLACEHOLDER, false), at("/", true)] : [at(dir, false)]))
+    const candidates = atomDirs.flatMap((dir) =>
+      dir === null ? [...at(PLACEHOLDER, false), ...at("/", true)] : at(dir, false),
+    )
     const entries: Entry[] = [{ atom, candidates, dirs: known(atomDirs) }]
     if (!atom.prescan) {
       entries.push(...expandWrittenScript(atom, dirs, atomDirs, scope))

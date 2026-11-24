@@ -67,6 +67,10 @@ describe("working directory", () => {
     const cds = Array.from({ length: 8 }, (_, i) => `cd /ocsp-analyzer/d${i}`).join("; ")
     expect(verdict(`${cds}; rm -rf etc`)).toEqual(["ask", "rm-system-path"])
   })
+
+  test("a path through a root symlink reports the rule for the link name", () => {
+    expect(verdict("rm -rf ${d} /bin")).toEqual(["deny", "rm-system-path"])
+  })
 })
 
 describe("wrappers and stdin", () => {

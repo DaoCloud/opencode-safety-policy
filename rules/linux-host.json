@@ -14,7 +14,9 @@
           "rm -f /etc/*",
           "rm -rf ../../../..",
           "ssh node1 'rm -rf /var'",
-          "cd /tmp && sudo rm -Rf /usr"
+          "cd /tmp && sudo rm -Rf /usr",
+          "rm -rf /bin",
+          "cd /sbin && rm -rf *"
         ],
         "ignore": ["rm -rf ./build", "rm /etc/hosts", "rm -rf /etc/app/cache", "echo rm -rf /"]
       }
@@ -205,7 +207,7 @@
       "flags": ["-R", "--recursive"],
       "pattern": "(^| )/(\\*|(etc|var|usr|boot|home|data|root|bin|sbin|lib|lib32|lib64|opt|srv|dev|proc|sys|run|mnt)(/\\*?)?)?( |$)",
       "examples": {
-        "match": ["chmod -R 777 /", "chown -R nobody /etc", "chgrp --recursive users /home"],
+        "match": ["chmod -R 777 /", "chown -R nobody /etc", "chgrp --recursive users /home", "chmod -R 777 /lib"],
         "ignore": ["chmod -R 755 ./dist", "chmod 644 /etc/hosts", "echo chmod -R 777 /"]
       }
     },
