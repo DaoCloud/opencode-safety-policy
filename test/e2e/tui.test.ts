@@ -126,6 +126,16 @@ describe.skipIf(!E2E_ENABLED)("tui", () => {
     await tui.waitFor("当前模式：strict（source: runtime）")
   })
 
+  test("/safety test shows the unwrap chain in a dialog", async () => {
+    await tui.type(`/safety test ssh n1 "sudo rm -rf /etc"`)
+    tui.press(ENTER)
+    await tui.waitFor("拆壳链：ssh → sudo")
+    expect(tui.screen()).toContain("结果：deny [rm-system-path]")
+    expect(tui.screen()).toContain("位置：远端 n1")
+    tui.press(ENTER)
+    await tui.waitFor("拆壳链：ssh → sudo", false)
+  })
+
   test("shows the reason of a forced approval and runs the command once allowed", async () => {
     const file = h.write("tmp/tui.txt", "x")
     await tui.type(directive("shell", { command: `rm ${file}` }))

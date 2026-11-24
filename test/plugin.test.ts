@@ -10,7 +10,8 @@ import { createPolicy, type Policy } from "../src/policy"
 import type { CompiledRule } from "../src/rules/matcher"
 import { PLUGIN_DIR } from "../src/rules/self-protect"
 import { createRpcHandlers } from "../src/rpc-handlers"
-import { createModeState, LOCK_ENV, MODE_ENV } from "../src/state"
+import { LOCK_ENV, MODE_ENV } from "../src/state"
+import { BLOCK_PREFIX, createStats } from "../src/stats"
 import type { Mode } from "../src/types"
 import { fakeContext } from "./helpers/fake-context"
 
@@ -48,12 +49,14 @@ async function setup(init: { options?: unknown; mode?: Mode; policy?: Policy; di
   const home = init.home ?? "/home/u"
   const policy = init.policy ?? createPolicy({ options: init.options ?? {}, storage: fake.ctx.storage, env, home, now: () => clock.t })
   const markers = createMarkers(() => clock.t)
-  await registerToolHooks(fake.ctx, { policy, markers })
-  await registerPermissionHook(fake.ctx, { policy, markers })
+  const stats = createStats(fake.ctx.storage, () => clock.t)
+  await registerToolHooks(fake.ctx, { policy, markers, stats })
+  await registerPermissionHook(fake.ctx, { policy, markers, stats })
   return {
     ...fake,
     clock,
     markers,
+    stats,
     before: (event: Call) => fake.fire("tool.execute.before", event),
     after: (event: Call) => fake.fire("tool.execute.after", { ...event, status: "completed", result: { output: "" } }),
     /** Fires `permission.evaluate` like OpenCode after the saved rules allowed the request, and returns the event. */
@@ -384,26 +387,32 @@ describe("entry", () => {
 })
 
 describe("rpc", () => {
-  async function setupRpc(env: Record<string, string> = {}) {
-    const fake = fakeContext()
+  const NONE = { deny: 0, ask: 0, rules: [] }
+
+  async function setupRpc(env: Record<string, string> = {}, options: unknown = {}) {
+    const fake = fakeContext({ directory: root })
     const clock = { t: 1_000_000 }
-    const mode = createModeState({ storage: fake.ctx.storage, env, now: () => clock.t })
-    await fake.ctx.rpc.register(definition, createRpcHandlers(mode))
-    return { ...fake, clock, rpc: (method: string, input: unknown) => fake.call(definition.id, method, input) }
+    const policy = createPolicy({ options, storage: fake.ctx.storage, env, home: "/home/u", now: () => clock.t })
+    const stats = createStats(fake.ctx.storage, () => clock.t)
+    await fake.ctx.rpc.register(definition, createRpcHandlers({ policy, stats, directory: fake.ctx.location.directory }))
+    const blocks = () => [...fake.data.keys()].filter((key) => key.startsWith(BLOCK_PREFIX))
+    const rpc = (method: string, input: unknown) => fake.call(definition.id, method, input)
+    return { ...fake, clock, stats, blocks, rpc }
   }
 
   test("status reports the mode without an expiry", async () => {
     const s = await setupRpc()
-    expect(await s.rpc("status", {})).toStrictEqual({ mode: "strict", source: "default", locked: false })
+    expect(await s.rpc("status", {})).toStrictEqual({ mode: "strict", source: "default", locked: false, recent: NONE })
   })
 
   test("setMode returns the new status and a TTL falls back", async () => {
     const s = await setupRpc({ [MODE_ENV]: "relaxed" })
     const expiresAt = s.clock.t + 60_000
     expect(await s.rpc("setMode", { mode: "off", ttlMs: 60_000 })).toStrictEqual({ mode: "off", source: "runtime", locked: false, expiresAt })
-    expect(await s.rpc("status", {})).toStrictEqual({ mode: "off", source: "runtime", locked: false, expiresAt })
+    const status = { mode: "off", source: "runtime", locked: false, expiresAt, recent: NONE }
+    expect(await s.rpc("status", {})).toStrictEqual(status)
     s.clock.t = expiresAt
-    expect(await s.rpc("status", {})).toStrictEqual({ mode: "relaxed", source: "env", locked: false })
+    expect(await s.rpc("status", {})).toStrictEqual({ mode: "relaxed", source: "env", locked: false, recent: NONE })
     expect(await s.rpc("setMode", { mode: "strict" })).toStrictEqual({ mode: "strict", source: "runtime", locked: false })
   })
 
@@ -415,6 +424,110 @@ describe("rpc", () => {
       data: { mode: "strict" },
     })
     expect(s.data.size).toBe(0)
-    expect(await s.rpc("status", {})).toStrictEqual({ mode: "strict", source: "lock", locked: true })
+    expect(await s.rpc("status", {})).toStrictEqual({ mode: "strict", source: "lock", locked: true, recent: NONE })
+  })
+
+  test("status reports the recent blocks and omits them when they cannot be read", async () => {
+    const s = await setupRpc()
+    await s.stats.record("deny", "rm-system-path")
+    await s.stats.record("ask", "rm-local")
+    expect((await s.rpc("status", {})) as object).toMatchObject({
+      recent: { deny: 1, ask: 1, rules: [{ ruleId: "rm-local", count: 1 }, { ruleId: "rm-system-path", count: 1 }] },
+    })
+    ;(s.ctx.storage as { scan: unknown }).scan = async () => {
+      throw new Error("disk I/O error")
+    }
+    expect(await s.rpc("status", {})).toStrictEqual({ mode: "strict", source: "default", locked: false })
+  })
+
+  test("test dry-runs a shell call in the current mode without counting it", async () => {
+    const s = await setupRpc()
+    expect(await s.rpc("test", { command: `ssh n1 "sudo bash -c 'rm -rf /data/*'" && ls` })).toStrictEqual({
+      mode: "strict",
+      decision: "deny",
+      ruleId: "rm-system-path",
+      reason: expect.any(String),
+      atoms: [
+        {
+          argv: ["rm", "-rf", "/data/*"],
+          isRemote: true,
+          targetHost: "n1",
+          wrapperChain: ["ssh", "sudo", "bash -c"],
+          decision: "deny",
+          ruleId: "rm-system-path",
+          reason: expect.any(String),
+        },
+        { argv: ["ls"], isRemote: false, wrapperChain: [], decision: "allow" },
+      ],
+    })
+    expect(await s.rpc("test", { command: "rm -rf etc", workdir: "/" })).toMatchObject({ ruleId: "rm-system-path" })
+    expect(await s.rpc("test", { command: "rm -rf etc" })).toMatchObject({ decision: "ask" })
+    await s.rpc("setMode", { mode: "off" })
+    expect(await s.rpc("test", { command: "rm -rf /data" })).toMatchObject({ mode: "off", decision: "allow" })
+    const result = await s.rpc("test", { command: "echo x > opencode.json" })
+    expect(result).toMatchObject({ mode: "off", ruleId: "self-protect" })
+    expect(s.blocks()).toEqual([])
+  })
+
+  test("test reports config errors like the hooks", async () => {
+    const s = await setupRpc({}, { mode: "bogus" })
+    expect(await s.rpc("test", { command: "ls" })).toStrictEqual({
+      mode: "strict",
+      decision: "deny",
+      ruleId: "config-error",
+      reason: expect.stringContaining("mode"),
+      atoms: [],
+    })
+    await s.rpc("setMode", { mode: "off" })
+    expect(await s.rpc("test", { command: "rm -rf /data" })).toStrictEqual({ mode: "off", decision: "allow", atoms: [] })
+  })
+})
+
+describe("stats", () => {
+  test("count the denies and asks of both hooks once", async () => {
+    const s = await setup({ options: { protectedEndpoints: { bmcCidrs: ["10.0.0.0/24"] } } })
+    await expect(s.before(call("shell", { command: "rm -rf /etc" }))).rejects.toThrow()
+    await expect(s.before(call("shell", { command: "rm -rf /var" }))).rejects.toThrow()
+    const marked = call("shell", { command: "rm /tmp/x" })
+    await s.before(marked)
+    const source = { type: "tool" as const, messageID: "msg_1", id: marked.id }
+    const evaluation = { action: "shell", resources: ["rm /tmp/x"], source }
+    expect((await s.evaluate(evaluation)).effect).toBe("ask")
+    expect((await s.evaluate({ action: "edit", resources: ["opencode.json"] })).effect).toBe("deny")
+    const post = { action: "webfetch", resources: ["http://10.0.0.5/api"], metadata: { method: "POST" } }
+    expect((await s.evaluate(post)).effect).toBe("deny")
+    expect(await s.stats.recent()).toEqual({
+      deny: 4,
+      ask: 1,
+      rules: [
+        { ruleId: "rm-system-path", count: 2 },
+        { ruleId: "protected-endpoint-write", count: 1 },
+        { ruleId: "rm-local", count: 1 },
+      ],
+    })
+  })
+
+  test("count config errors and non-shell asks", async () => {
+    const broken = await setup({ options: { mode: "bogus" } })
+    await expect(broken.before(call("shell", { command: "ls" }))).rejects.toThrow("[safety-policy:config-error]")
+    expect((await broken.evaluate({ action: "edit", resources: ["src/a.ts"] })).effect).toBe("deny")
+    expect(await broken.stats.recent()).toEqual({ deny: 2, ask: 0, rules: [{ ruleId: "config-error", count: 2 }] })
+
+    const relaxed = await setup({ mode: "relaxed" })
+    await relaxed.before(call("opencode_worktree_remove", { directory: "/repo/wt", force: true }))
+    const rules = [{ ruleId: "worktree-remove-force", count: 1 }]
+    expect(await relaxed.stats.recent()).toEqual({ deny: 0, ask: 1, rules })
+  })
+
+  test("a failing write never changes a decision", async () => {
+    const s = await setup()
+    ;(s.ctx.storage as { set: unknown }).set = () => {
+      throw new Error("disk full")
+    }
+    await expect(s.before(call("shell", { command: "rm -rf /etc" }))).rejects.toThrow("[safety-policy:rm-system-path]")
+    const marked = call("shell", { command: "rm /tmp/x" })
+    await s.before(marked)
+    expect(s.markers.get("ses_1", marked.id)).toBeDefined()
+    expect((await s.evaluate({ action: "edit", resources: ["opencode.json"] })).effect).toBe("deny")
   })
 })

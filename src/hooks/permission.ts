@@ -20,6 +20,7 @@ import { resolveCanonicalPath } from "../path-util"
 import { active, type Policy } from "../policy"
 import { decide } from "../rules"
 import { isProtected, selfProtectVerdict } from "../rules/self-protect"
+import type { Stats } from "../stats"
 import { describe, label, type Markers } from "./tool"
 
 type Context = Plugin.Context
@@ -38,6 +39,7 @@ interface Evaluation {
 export interface PermissionHookDeps {
   policy: Policy
   markers: Markers
+  stats: Stats
 }
 
 export function registerPermissionHook(ctx: Pick<Context, "permission" | "location">, deps: PermissionHookDeps): Promise<Registration> {
@@ -47,8 +49,8 @@ export function registerPermissionHook(ctx: Pick<Context, "permission" | "locati
 async function evaluate(ctx: Pick<Context, "location">, deps: PermissionHookDeps, event: Evaluation) {
   if (event.effect === "deny") return
   if (event.action === "shell") return forcePrompt(deps.markers, event)
-  if (event.action === "edit") return protectFiles(ctx, deps.policy, event)
-  if (event.action === "webfetch") return protectEndpoints(deps.policy, event)
+  if (event.action === "edit") return protectFiles(ctx, deps, event)
+  if (event.action === "webfetch") return protectEndpoints(deps, event)
 }
 
 function forcePrompt(markers: Markers, event: Evaluation) {
@@ -62,35 +64,41 @@ function forcePrompt(markers: Markers, event: Evaluation) {
   if (marker) set(event, "ask", label(marker.ruleId, marker.reason))
 }
 
-async function protectFiles(ctx: Pick<Context, "location">, policy: Policy, event: Evaluation) {
-  const state = await enforced(policy, event)
+async function protectFiles(ctx: Pick<Context, "location">, deps: PermissionHookDeps, event: Evaluation) {
+  const state = await enforced(deps, event)
   if (!state) return
   for (const resource of event.resources) {
-    const target = resolveCanonicalPath(resource, ctx.location.directory, policy.home)
+    const target = resolveCanonicalPath(resource, ctx.location.directory, deps.policy.home)
     if (!isProtected(target, state.loaded.protect)) continue
     const verdict = selfProtectVerdict(target)
-    return set(event, "deny", label(verdict.ruleId, verdict.reason))
+    return deny(deps.stats, event, verdict.ruleId, verdict.reason)
   }
 }
 
-async function protectEndpoints(policy: Policy, event: Evaluation) {
+async function protectEndpoints(deps: PermissionHookDeps, event: Evaluation) {
   const method = event.metadata?.method
   const known = typeof method === "string" ? method.toUpperCase() : "GET"
   if (known === "GET" || known === "HEAD") return
-  const state = await enforced(policy, event)
+  const state = await enforced(deps, event)
   if (!state || state.mode === "off") return
   const http = event.resources.map((url) => request(known, url, undefined))
   const verdict = decide({ argv: [], isRemote: false, http }, state.loaded.rules, "strict")
-  if (verdict.decision !== "allow") set(event, "deny", label(verdict.ruleId!, verdict.reason!))
+  if (verdict.decision !== "allow") deny(deps.stats, event, verdict.ruleId!, verdict.reason!)
 }
 
 /** The policy the hooks enforce now; a config error denies the event and returns `undefined`. */
-async function enforced(policy: Policy, event: Evaluation) {
+async function enforced(deps: PermissionHookDeps, event: Evaluation) {
   try {
-    return await active(policy)
+    return await active(deps.policy)
   } catch (error) {
-    set(event, "deny", label("config-error", describe(error)))
+    deny(deps.stats, event, "config-error", describe(error))
   }
+}
+
+/** Shell asks are counted by `execute.before`, so only denies are recorded here. */
+function deny(stats: Stats, event: Evaluation, ruleId?: string, reason?: string) {
+  void stats.record("deny", ruleId)
+  set(event, "deny", label(ruleId, reason))
 }
 
 function set(event: Evaluation, effect: Evaluation["effect"], message: string) {

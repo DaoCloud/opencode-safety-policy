@@ -478,7 +478,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [x] P1-3 HTTP 提取与受保护端点
 - [x] P1-4 webfetch 与 Code Mode fetch
 - [x] P1-5 脚本预扫与 TOCTOU
-- [ ] P1-6 /safety test 与 CLI
+- [x] P1-6 /safety test 与 CLI
 - [ ] P1-E2E
 - [ ] P2-1 自保护扩展
 - [ ] P2-2 evaluate 的 deny 级复检

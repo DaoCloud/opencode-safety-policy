@@ -126,6 +126,71 @@ describe.skipIf(!E2E_ENABLED)("modes", () => {
   })
 })
 
+describe.skipIf(!E2E_ENABLED)("safety test and stats", () => {
+  type Recent = { deny: number; ask: number }
+
+  /** Stats are written without awaiting, so poll until they land. */
+  async function recentAt(directory: string, expected: Recent) {
+    const deadline = Date.now() + 10_000
+    let recent: Recent = (await status(directory)).recent
+    while ((recent.deny !== expected.deny || recent.ask !== expected.ask) && Date.now() < deadline) {
+      await Bun.sleep(200)
+      recent = (await status(directory)).recent
+    }
+    expect(recent).toMatchObject(expected)
+  }
+
+  test("test dry-runs a command in the current mode without running or counting it", async () => {
+    const before = (await status()).recent
+    const res = await h.rpc("test", { command: `ssh n1 "sudo bash -c 'rm -rf /data/*'"` })
+    expect(res.status).toBe(200)
+    expect(res.body.output).toEqual({
+      mode: "strict",
+      decision: "deny",
+      ruleId: "rm-system-path",
+      reason: expect.any(String),
+      atoms: [
+        {
+          argv: ["rm", "-rf", "/data/*"],
+          isRemote: true,
+          targetHost: "n1",
+          wrapperChain: ["ssh", "sudo", "bash -c"],
+          decision: "deny",
+          ruleId: "rm-system-path",
+          reason: expect.any(String),
+        },
+      ],
+    })
+    const file = h.write("tmp/dry.txt", "x")
+    const local = await h.rpc("test", { command: "rm dry.txt", workdir: "tmp" })
+    expect(local.body.output).toEqual({
+      mode: "strict",
+      decision: "ask",
+      ruleId: "rm-local",
+      reason: expect.any(String),
+      atoms: [
+        {
+          argv: ["rm", "dry.txt"],
+          isRemote: false,
+          wrapperChain: [],
+          decision: "ask",
+          ruleId: "rm-local",
+          reason: expect.any(String),
+        },
+      ],
+    })
+    expect(readFileSync(file, "utf8")).toBe("x")
+    expect((await status()).recent).toEqual(before)
+  })
+
+  test("status counts the blocks of every directory", async () => {
+    const before: Recent = (await status(h.project2)).recent
+    expectDenied(await h.shell("kubectl delete ns prod"), "k8s-delete-namespace")
+    expectAsked(await h.shell(`rm ${h.write("tmp/stats.txt", "x")}`), "rm-local")
+    await recentAt(h.project2, { deny: before.deny + 1, ask: before.ask + 1 })
+  })
+})
+
 describe.skipIf(!E2E_ENABLED)("code mode", () => {
   beforeAll(async () => {
     await h.start({ OPENCODE_FLAGS: "full_codemode" })

@@ -35,6 +35,14 @@ export function fakeContext(init: { directory?: string; options?: Record<string,
       get: async (key: string) => data.get(key),
       set: async (key: string, value: unknown) => void data.set(key, structuredClone(value)),
       remove: async (key: string) => void data.delete(key),
+      /** Like the OpenCode KV: keys in ascending order, after `after`, with `next` when more remain. */
+      scan: async ({ prefix, after, limit = 100 }: { prefix: string; after?: string; limit?: number }) => {
+        const keys = [...data.keys()]
+          .filter((key) => key.startsWith(prefix) && (after === undefined || key > after))
+          .sort()
+        const entries = keys.slice(0, limit).map((key) => ({ key, value: structuredClone(data.get(key)) }))
+        return keys.length > limit ? { entries, next: entries.at(-1)!.key } : { entries }
+      },
     },
     tool: { hook: hook("tool") },
     permission: {

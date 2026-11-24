@@ -5,13 +5,16 @@
  * marked, and the `evaluate` hook forces the built-in shell prompt for it, so the user sees one prompt. Other tools
  * that need approval are prompted here with `permission.assert`, without `save` so `Always` cannot store a rule, and
  * without `source` so the TUI lists the resources. Tool calls are matched as `[tool ID, JSON input]` (design 4.1).
- * In `off` mode only shell self-protection applies (design 4.2).
+ * In `off` mode only shell self-protection applies (design 4.2). Every `deny` and `ask` is counted in the recent
+ * block stats (design 5.3).
  */
 
 import type { Plugin } from "@opencode/plugin"
-import { analyze } from "../analyzer"
-import { active, type Policy } from "../policy"
+import { analyze, type Analysis } from "../analyzer"
+import { active, type Loaded, type Policy } from "../policy"
 import { decide, type Verdict } from "../rules"
+import type { Stats } from "../stats"
+import type { Mode } from "../types"
 
 type Context = Plugin.Context
 type Registration = Awaited<ReturnType<Context["tool"]["hook"]>>
@@ -23,6 +26,9 @@ interface BeforeEvent {
   id: string
   input: unknown
 }
+
+type Enforced = { mode: Mode; loaded: Loaded }
+export type ShellInput = { command: string; workdir?: string }
 
 export const MARKER_TTL_MS = 60_000
 const SUMMARY_MAX = 200
@@ -74,6 +80,7 @@ export function createMarkers(now: () => number = Date.now, ttlMs = MARKER_TTL_M
 export interface ToolHookDeps {
   policy: Policy
   markers: Markers
+  stats: Stats
 }
 
 export function registerToolHooks(ctx: Pick<Context, "tool" | "permission" | "location">, deps: ToolHookDeps): Promise<Registration[]> {
@@ -88,7 +95,7 @@ async function before(ctx: Pick<Context, "permission" | "location">, deps: ToolH
   try {
     state = await active(deps.policy)
   } catch (error) {
-    throw blocked("config-error", describe(error))
+    throw blocked(deps.stats, "config-error", describe(error))
   }
   if (!state) return
   const { mode, loaded } = state
@@ -99,22 +106,15 @@ async function before(ctx: Pick<Context, "permission" | "location">, deps: ToolH
   let verdict: Verdict
   try {
     verdict = shell
-      ? analyze({
-          ...shell,
-          locationDirectory: ctx.location.directory,
-          mode,
-          rules: loaded.rules,
-          readOnly: loaded.readOnly,
-          home: deps.policy.home,
-          protect: loaded.protect,
-        })
+      ? analyzeShell(deps.policy, state, ctx.location.directory, shell)
       : decide({ argv: [event.tool, json], isRemote: false, tool: true }, loaded.rules, mode)
   } catch (error) {
-    throw blocked("policy-error", describe(error))
+    throw blocked(deps.stats, "policy-error", describe(error))
   }
 
-  if (verdict.decision === "deny") throw blocked(verdict.ruleId, verdict.reason)
+  if (verdict.decision === "deny") throw blocked(deps.stats, verdict.ruleId, verdict.reason)
   if (verdict.decision !== "ask") return
+  void deps.stats.record("ask", verdict.ruleId)
   if (shell) {
     deps.markers.add({ sessionID: event.sessionID, callID: event.id, command: shell.command, ruleId: verdict.ruleId, reason: verdict.reason })
     return
@@ -128,8 +128,15 @@ async function before(ctx: Pick<Context, "permission" | "location">, deps: ToolH
   })
 }
 
+/** The analysis behind a `shell` verdict, shared with the dry run of the `test` RPC. */
+export function analyzeShell(policy: Policy, state: Enforced, locationDirectory: string, shell: ShellInput): Analysis {
+  const { mode, loaded } = state
+  const { rules, readOnly, protect } = loaded
+  return analyze({ ...shell, locationDirectory, mode, rules, readOnly, home: policy.home, protect })
+}
+
 /** The shell tool's own decoding rejects anything else, so such input never runs. */
-function shellInput(input: unknown): { command: string; workdir?: string } | undefined {
+function shellInput(input: unknown): ShellInput | undefined {
   if (typeof input !== "object" || input === null) return undefined
   const { command, workdir } = input as Record<string, unknown>
   if (typeof command !== "string") return undefined
@@ -140,7 +147,8 @@ export function label(ruleId = "unknown", reason = ""): string {
   return `[safety-policy:${ruleId}] ${reason}`
 }
 
-function blocked(ruleId?: string, reason?: string): Error {
+function blocked(stats: Stats, ruleId?: string, reason?: string): Error {
+  void stats.record("deny", ruleId)
   return new Error(label(ruleId, reason))
 }
 

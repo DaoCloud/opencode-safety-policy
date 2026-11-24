@@ -7,10 +7,31 @@
  */
 
 import { Rpc } from "@opencode/plugin/rpc"
+import type { AtomReport } from "./src/analyzer"
 import type { ModeSource } from "./src/state"
-import type { Mode } from "./src/types"
+import type { Recent } from "./src/stats"
+import type { Decision, Mode } from "./src/types"
 
 const mode = { enum: ["strict", "relaxed", "off"] }
+const strings = { type: "array", items: { type: "string" } }
+const verdict = { decision: { enum: ["allow", "ask", "deny"] }, ruleId: { type: "string" }, reason: { type: "string" } }
+
+const recent = {
+  type: "object",
+  properties: {
+    deny: { type: "integer" },
+    ask: { type: "integer" },
+    rules: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { ruleId: { type: "string" }, count: { type: "integer" } },
+        required: ["ruleId", "count"],
+      },
+    },
+  },
+  required: ["deny", "ask", "rules"],
+}
 
 const status = {
   type: "object",
@@ -19,8 +40,21 @@ const status = {
     source: { enum: ["lock", "runtime", "env", "config", "default", "fallback"] },
     locked: { type: "boolean" },
     expiresAt: { type: "number" },
+    recent,
   },
   required: ["mode", "source", "locked"],
+}
+
+const atom = {
+  type: "object",
+  properties: {
+    argv: strings,
+    isRemote: { type: "boolean" },
+    targetHost: { type: "string" },
+    wrapperChain: strings,
+    ...verdict,
+  },
+  required: ["argv", "isRemote", "wrapperChain", "decision"],
 }
 
 export default Rpc.define({
@@ -36,6 +70,18 @@ export default Rpc.define({
       output: status,
       errors: { locked: { type: "object", properties: { mode }, required: ["mode"] } },
     },
+    test: {
+      input: {
+        type: "object",
+        properties: { command: { type: "string" }, workdir: { type: "string" } },
+        required: ["command"],
+      },
+      output: {
+        type: "object",
+        properties: { mode, ...verdict, atoms: { type: "array", items: atom } },
+        required: ["mode", "decision", "atoms"],
+      },
+    },
   },
   events: {},
 })
@@ -46,6 +92,8 @@ export interface Status {
   locked: boolean
   /** Epoch ms, set while a runtime TTL is active. */
   expiresAt?: number
+  /** Only from `status`, omitted when the stats cannot be read. */
+  recent?: Recent
 }
 
 export interface SetModeInput {
@@ -56,4 +104,18 @@ export interface SetModeInput {
 /** Data of the `locked` error. */
 export interface Locked {
   mode: Mode
+}
+
+/** A `shell` call to judge without running it. */
+export interface TestInput {
+  command: string
+  workdir?: string
+}
+
+export interface TestResult {
+  mode: Mode
+  decision: Decision
+  ruleId?: string
+  reason?: string
+  atoms: AtomReport[]
 }

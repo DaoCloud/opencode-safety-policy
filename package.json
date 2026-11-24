@@ -10,6 +10,7 @@
     "./tui": "./tui.ts"
   },
   "files": [
+    "cli.ts",
     "index.ts",
     "rpc.ts",
     "rules",
