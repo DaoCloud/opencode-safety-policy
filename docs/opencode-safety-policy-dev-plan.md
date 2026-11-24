@@ -350,6 +350,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### P1-E2E
 
 - [x] P1-1、P1-2 的判定在真实 `opencode serve` 上与单元测试一致（`test/e2e/analyzer.test.ts`）
+- [ ] 按[手工试用指南](./opencode-safety-policy-manual-test.md)用真实模型走一遍，本阶段新增的拦截行为已补进用例
 - [ ] `bun test` 全绿，覆盖嵌套引号、heredoc、管道、Redfish/UFM 写请求和脚本预扫
 - [ ] `curl -X POST https://<bmc>/redfish/v1/.../VirtualMedia.InsertMedia` 被拦截
 - [ ] Code Mode `fetch` 写受保护端点被拦截，包括 307/308 重定向
@@ -392,6 +393,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 
 ### P2-E2E
 
+- [ ] 按[手工试用指南](./opencode-safety-policy-manual-test.md)用真实模型走一遍，本阶段新增的拦截行为已补进用例
 - [ ] `cat ~/.config/opencode/service.json`、`sqlite3 <db> ...`、`curl http://127.0.0.1:<port>/api/rpc/...` 被拦截
 - [ ] TUI 中，插件强制的审批会弹出原因 Toast
 - [ ] 审计日志字段完整，日志路径不可写时插件仍正常工作
@@ -430,8 +432,9 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 | 规则回归 | 全部 `rules/*.json` 的 `examples` | `rules-examples.test.ts` 自动遍历，新增规则不用写测试代码 |
 | 插件集成 | hook 编排、标记匹配、setup/cleanup、RPC | `fake-context.ts`。只验证插件自身逻辑，不能代替真实 OpenCode 行为 |
 | 真实行为 | OpenCode 的审批、Code Mode、TUI、storage | Spike + 各阶段 E2E 清单，可自动化的项放进 `test/e2e/`（`bun run test:e2e`） |
+| 手工试用 | 真实模型下的拦截、审批与模式切换 | [手工试用指南](./opencode-safety-policy-manual-test.md)，在各阶段 E2E 和升级 OpenCode 后执行 |
 
-- 每次升级 OpenCode 版本：重跑 `bun run test:e2e` 和 Spike S3–S9，通过后再放宽 `peerDependencies`。
+- 每次升级 OpenCode 版本：重跑 `bun run test:e2e` 和 Spike S3–S9，并按手工试用指南走一遍，通过后再放宽 `peerDependencies`。
 - 不写只验证常量、默认值或类型的测试。
 
 ## 12. 待决事项
