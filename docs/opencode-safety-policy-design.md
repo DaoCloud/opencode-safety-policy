@@ -52,6 +52,7 @@
 - **其他插件改写命令边界**：`shell.hook("create.before")` 在内置 `shell` 的 `permission.assert` **之前**触发，且可以改写 `command`/`cwd`。其他插件可能在本插件 `execute.before` 检查之后改写命令。这属于插件供应链信任问题，通过 `ManagedPolicy` 的 `plugin.use` 白名单限制可加载插件（见 [8](#8-分发与部署方案适配-infra-integrate-场景)）。
 - 对于远端主机上**预先存在且内容不可见**的脚本（如 `ssh host /opt/cleanup.sh`）或**从公网实时下载执行**的流（如 `curl ... | ssh host sh`），插件无法静态知道内部指令，但可通过策略对这类高风险形态执行 **fail-closed（默认 `deny` 或强制 `ask` 人工审批）**。
 - 对于通过脚本刻意混淆、动态拼接 URL/IP 调用 Redfish/UFM API 的对抗性绕过，纯静态预扫无法做到 100% 拦截，需配合管理网段隔离与最小权限凭据共同兜底。
+- **运行期值拼入再解析脚本的边界**：变量、`xargs -I`/`find -exec` 的 `{}` 与 `parallel` 未知输入拼入会被 shell 再次解析的文本（`bash -c "echo $X"`、`eval echo $X`、`ssh host "ls $X"`、`xargs -I{} sh -c 'echo {}'`）时，只按一个变量操作数判定，值中的 `;`、`$(...)` 等元字符被再次解析后执行的命令不可见。全部按 opaque 处理会误拦大量常见用法，这类刻意构造的注入属于上文的对抗性绕过。
 
 ---
 
@@ -134,12 +135,26 @@
   │     • 解析生效工作目录 effectiveCwd = path.join(realpath(nearestExistingAncestor(workdir ?? location.directory)), relativeTail)
   │     • 按 ; / && / || / | / & / $(...) / `...` 拆分为命令段，
   │       同时保留管道上游、输入重定向（<、<<、<<<）与命令替换信息
+  │     • 复合命令（{ ... }、( ... )、if/while/until/for/select）记录分组：分组前的管道与分组后的重定向
+  │       （} < f、done <<<x）作用于组内每条命令，组内 $(...)、<(...) 同样读这些重定向。组外重定向先于
+  │       组内管道生效（{ curl ... | bash; } < /dev/null 中 bash 仍读管道），管道右侧分组之后重定向中的
+  │       $(...) 同样读该管道。time [-p] [--] [!] 与 coproc [NAME] 前缀（含 time coproc、time function）
+  │       后的分组同样识别，coproc 的命令按读管道处理；for/select 循环体支持
+  │       do ... done 与 { ... }，for NAME do 省略 in 列表。复制到组内的重定向累计超过 64 Ki 个 -> opaque
   │     • 命令名归一化：剥离外层引号、前导反斜杠（\rm）与路径前缀（path.basename("/usr/bin/rm") -> "rm"）
   │     • 参数中未加引号的 brace 展开按 bash 语义展开（{a,b}、/{etc,usr}、{1..10..2}、{01..10}、{a..z}，
-  │       含嵌套）：整条命令行累计最多 1024 个词、嵌套最多 16 层，超出即按 opaque fail-closed；
+  │       含嵌套）：累计最多 1024 个词、64 KiB 文本（展开前估算，不先生成再判断），嵌套最多 16 层，
+  │       超出即按 opaque fail-closed；顶层命令行一份预算，拆壳得到的所有内层脚本共享另一份；
   │       for/select 循环头的词表不展开
   │     • 关键工具维护明确的带值全局参数表（ssh、kubectl、docker、curl），
   │       避免 --kubeconfig /path、--as admin、-o ProxyCommand=... 干扰子命令提取
+  │     • 长选项缩写按各工具解析器的语义识别唯一前缀：getopt_long（sudo、env、timeout、nice、time、
+  │       stdbuf、ionice、su/runuser、xargs、chroot、flock、watch 及 rm/chmod/cp 等路径敏感命令）、
+  │       argparse（ansible）、optparse（pssh、clush）、Getopt::Long（GNU parallel，长选项不区分大小写，
+  │       并接受 + 前缀，如 +halt、--HALT）。精确名优先，否则取表中第一个前缀匹配（真实解析器对歧义前缀
+  │       直接报错，取哪个都安全），因此选项表列全无值 flag，避免 flag 被当成带值选项的前缀。getopt 的
+  │       可选值参数只接受连写值（xargs -ia 中 a 为替换串、watch -dn 中 n 为 -d 的值）。kubectl、docker、
+  │       podman、nerdctl、crictl 等 pflag/cobra CLI 及 flock 锁文件之后的 -c/--command 只认精确名
   │     • 对 rm/shred/chmod/chown/dd/mv/find -delete 等路径敏感命令，将相对路径参数（含 . / .. / *）
   │       基于 effectiveCwd 展开为规范绝对路径，防止 shell({ workdir: "/", command: "rm -rf etc" }) 绕过
   │     • 跟踪 cd/pushd 与 env -C、sudo -D/-i、su - 的目录切换：候选目录只增不减（cd 失败时仍留在原目录），
@@ -156,7 +171,14 @@
   │       （"$(go env GOPATH)/bin/sudo"）按该 basename 判定
   │     • 管道或进程替换向解释器喂脚本：curl ... | bash、base64 -d | sh、cat x | ssh host sh、
   │       bash <(curl ...)、source <(...)、... | python3 -、kubectl exec -i pod -- sh 读管道等，
-  │       脚本内容来自运行期数据 -> opaque（piped-script）
+  │       脚本内容来自运行期数据 -> opaque（piped-script）。/dev/stdin、/dev/fd/0、/proc/self/fd/0
+  │       等同 -，运行期才确定的脚本路径（bash $F）也可能是 /dev/stdin，同样按读 stdin 处理，其他
+  │       描述符路径（/dev/fd/3）与进程替换 -> opaque。stdin 重定向以最后一个为准：< /dev/stdin、
+  │       0</dev/fd/0、<&0 与运行期才确定的目标（< $F）保留原 stdin，<&- 关闭 stdin，<&N、
+  │       < /dev/fd/N 视为管道输入。管道右侧命令参数中的 $(...)、<(...) 先于重定向展开，其内层命令
+  │       同样读该管道（... | echo $(bash)）；输出进程替换 tee >(bash) 的内层命令按读管道处理。管道右侧
+  │       为复合命令时组内每条命令都读该管道（... | { cat; bash; }、... | while read l; do bash; done），
+  │       coproc bash 同理
   │     • Heredoc / Here-string 喂 SSH（ssh host bash <<'EOF' ... EOF）
   │     • 本地文件重定向喂 SSH（ssh host bash < script.sh）
   │     • 编码/间接执行（eval、$'\x72\x6d'、xargs rm）
@@ -171,11 +193,37 @@
   │     • Shell 嵌套：sh -c、bash -c、zsh -c、dash -c；无 -c 时以 stdin（heredoc / here-string）为脚本
   │       （bash <<EOF、ssh host <<EOF、sudo -s <<EOF、su root <<EOF）
   │     • 远程执行：ssh、sshpass；批量远程 pdsh、pssh/parallel-ssh、clush、ansible ... -m shell/command/raw
-  │       （含 ansible.builtin./ansible.legacy. 前缀）的远端命令按远程原子命令判定，clush -c/--copy 等拷贝模式不拆
-  │     • 容器/集群进入：kubectl exec --、docker/nerdctl/podman/crictl exec（含 podman exec -l）
+  │       （含 ansible.builtin./ansible.legacy. 前缀）的远端命令按远程原子命令判定，clush -c/--copy 等拷贝模式不拆；
+  │       pdsh/clush 带值参数表覆盖全部短选项及 pdsh 模块选项（-g、-X、-F、-j、-P）
+  │     • ansible -a 按 ansible-core 语义解析：以 { 开头且以 } 结尾的按 JSON 对象取 cmd/argv/_raw_params，
+  │       否则按 parse_kv 取 k=v（chdir、stdin、executable 等键可出现在任意位置，\= 等 Python 转义先解码）；
+  │       chdir 计入工作目录，stdin 作为 here-doc 喂给远端命令；含 Jinja 模板、JSON 或转义无法解析、
+  │       字段类型不符或 executable 非 shell -> opaque（dynamic-args）
+  │     • 容器/集群进入：kubectl exec --、docker/nerdctl/podman/crictl exec（含全局参数如 nerdctl -n、
+  │       podman --url）；podman exec -l/--cidfile 与 crictl exec --name/--pod/--label/-l 等过滤选项选中容器时，
+  │       第一个位置参数起即为命令
   │     • 批处理：xargs；find ... -exec/-execdir/-ok/-okdir（{} 以占位路径代入，*dir 形态目录未知，
-  │       find 本身仍保留以匹配 find -delete 规则）；GNU parallel（::: 取值逐个代入，-S 远程执行，
-  │       无命令时取值本身作为脚本）
+  │       find 本身仍保留以匹配 find -delete 规则；内层脚本中被引号包住的输入占位符，如
+  │       sh -c "rm -rf '{}'"，仍视为变量操作数）；GNU parallel（::: 及 --arg-sep 自定义分隔符的取值
+  │       逐个代入，::::/--arg-file-sep 文件取值视为变量操作数；-i/-e/-l 可选值参数按 Getopt::Long 语义解析：
+  │       连写在 -l 后只取开头的数字，其余按新一组短选项解析（-lj 2、-l1j 2），分开写时接受单独的 -，
+  │       不接受以 -、--、+ 开头的选项（-i +halt 1）；替换串在每个命令词内按 parallel 的顺序代入：先取
+  │       最短的 {= perl =}（结果视为变量操作数，末尾词中未配对的 {= 保留为文本，非末尾词中未配对的 {=
+  │       会与后续词合并 -> opaque），再从长到短代入 {}、{.}、{/}、{//}（同 File::Basename 的 dirname）、
+  │       {/.}、{#}、{%} 及其位置形式（{1}、{-1 //}，其中空白只认 ASCII，负位置按 Perl 下标回绕一次）；
+  │       ::: 取值与 stdin 都按行切分（取值中的换行拆出多个取值，空行也是一个作业，here-string 末尾自带
+  │       换行）；每个作业默认一个取值，超出取值个数的位置代入空串；取值按 parallel 规则加引号（只有
+  │       [-_.+/a-zA-Z0-9] 不加，空值为 ''），但首个命令词含替换串且其前文本不含空白或 = 时取值不加引号、
+  │       由 shell 再解析（parallel {} ::: 'rm -rf /etc'），-q 则改为在代入后给整个词加引号；-I 与取 Perl
+  │       真值的 -i/--replace（以最后一次为准）只改名 {}，其他替换串不受影响；-l/-L、-m、-X、--xargs、
+  │       -n/-N 大于 1 及多个取值来源把多个取值合成一个作业，此时分别检查每个取值占满所有位置、每个取值
+  │       单独一个作业（其余位置为空）、全部取值一起代入三类作业，取值不加引号时取值未知；-N 覆盖 -n，
+  │       -n/-N/-L 的值是 Perl 表达式：空白视为未设置，0 不追加取值且 {} 代入空串，非数字的值可能是任意
+  │       个数（含 0）；-C/--colsep、--csv、-d、-0、--trim 等拆分取值的选项及多于 64 个取值使取值未知
+  │       （视为变量操作数）；代入后总长超出上限 -> opaque（too-long）；-I 空串或含 (...) 的 -I/-i、
+  │       --header 及 --rpl、--parens、--plus、--bnr、--seqreplace 等改写替换串的选项 -> opaque
+  │       （dynamic-args）；--wd 计入工作目录，含替换串时目录未知；-S 远程执行；--pipe/--spreadstdin
+  │       喂 shell -> opaque；无命令时取值本身作为脚本，取值未知时 -> opaque）
   │     • 解释器：python/perl/ruby/node 从管道或 - 读程序、或以进程替换为脚本时 -> opaque；
   │       -c/-e 内联代码与本地脚本由 Stage 3.5 预扫
   │
@@ -245,6 +293,9 @@
   - `command` 可以是字符串或数组，与归一化后的命令名比较。
   - `subcommands` 中任一项命中即可，多词项（如 `"delete namespace"`）的后续词按顺序出现即可，不要求相邻。对有带值选项表的 CLI（`kubectl`、`docker`），首词必须是第一个位置参数。其他 CLI 的首词可以出现在任意位置参数上，避免未知的带值选项（如 `helm -n prod uninstall`）遮住子命令。
   - `flags` 中任一项命中即可。`-f` 也匹配短选项簇（如 `-rf`），`--force` 也匹配 `--force=…`，`--replicas=0` 也匹配 `--replicas 0`。`--` 之后的参数不参与匹配。
+    - 长选项的唯一前缀也算命中（`iptables --flu` 命中 `--flush`），因为 getopt_long、argparse 等解析器都接受缩写。有选项表的 CLI（`kubectl`、`docker`）只认精确名。
+    - 这是 fail-closed 取舍：前缀可能同时属于别的选项，如 `iptables --delete INPUT 1` 也会命中 `--delete-chain`。
+    - `pattern` 正则按字面匹配，不识别缩写。在正则里写长选项的规则需自行覆盖缩写形态。
   - `pattern` 作用于 `命令名 参数1 参数2 …`。本机路径参数已展开为绝对路径。带 `command` 的规则还会把 heredoc / here-string 正文（空白折叠为单个空格）接在参数后再试一次，如 `psql <<SQL DROP TABLE x`。不带 `command` 的规则不看 stdin，避免 `cat <<EOF > x.sh` 写脚本时误报。
   - `scope` 为 `local` / `remote` 时，只匹配本机或远端原子命令。
 - 非 shell 工具（MCP 工具、`opencode_worktree_remove` 等）复用同一套规则：
