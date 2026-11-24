@@ -156,7 +156,10 @@
   │       可选值参数只接受连写值（xargs -ia 中 a 为替换串、watch -dn 中 n 为 -d 的值）。kubectl、docker、
   │       podman、nerdctl、crictl 等 pflag/cobra CLI 及 flock 锁文件之后的 -c/--command 只认精确名
   │     • 对 rm/shred/chmod/chown/dd/mv/find -delete 等路径敏感命令，将相对路径参数（含 . / .. / *）
-  │       基于 effectiveCwd 展开为规范绝对路径，防止 shell({ workdir: "/", command: "rm -rf etc" }) 绕过
+  │       基于 effectiveCwd 展开为规范绝对路径，防止 shell({ workdir: "/", command: "rm -rf etc" }) 绕过。
+  │       规范路径落在根目录下符号链接的目标内时（usrmerge 的 /bin -> usr/bin，macOS 的 /etc -> private/etc），
+  │       再把这段前缀换回链接名生成一份参数（/usr/bin/x -> /bin/x），两份都匹配规则并取最严结果，
+  │       避免 rm -rf /bin 展开为 /usr/bin 后漏过系统目录规则，按目标路径写的规则也照常生效
   │     • 跟踪 cd/pushd 与 env -C、sudo -D/-i、su - 的目录切换：候选目录只增不减（cd 失败时仍留在原目录），
   │       超过 8 个时追加“未知目录”。未知目录（cd $X、cd -、登录 shell 的 home）分别按深层占位目录和 / 评估，
   │       与目录无关的 deny（如绝对路径 /etc）保持不变，仅经 / 推出的 deny 降为 ask
@@ -336,7 +339,7 @@
     - 长选项的唯一前缀也算命中（`iptables --flu` 命中 `--flush`），因为 getopt_long、argparse 等解析器都接受缩写。有选项表的 CLI（`kubectl`、`docker`）只认精确名。
     - 这是 fail-closed 取舍：前缀可能同时属于别的选项，如 `iptables --delete INPUT 1` 也会命中 `--delete-chain`。
     - `pattern` 正则按字面匹配，不识别缩写。在正则里写长选项的规则需自行覆盖缩写形态。
-  - `pattern` 作用于 `命令名 参数1 参数2 …`。本机路径参数已展开为绝对路径。带 `command` 的规则还会把 heredoc / here-string 正文（空白折叠为单个空格）接在参数后再试一次，如 `psql <<SQL DROP TABLE x`。不带 `command` 的规则不看 stdin，避免 `cat <<EOF > x.sh` 写脚本时误报。
+  - `pattern` 作用于 `命令名 参数1 参数2 …`。本机路径参数已展开为绝对路径，经过根目录下符号链接的路径还会以链接名再匹配一次（见 3.1 Stage 1）。带 `command` 的规则还会把 heredoc / here-string 正文（空白折叠为单个空格）接在参数后再试一次，如 `psql <<SQL DROP TABLE x`。不带 `command` 的规则不看 stdin，避免 `cat <<EOF > x.sh` 写脚本时误报。
   - `scope` 为 `local` / `remote` 时，只匹配本机或远端原子命令。
   - `http` 匹配 curl / wget / HTTPie 以及解释器预扫提取的 HTTP 请求（见 Stage 3.5），任一请求同时满足各项即命中：
     - `methods` 列出的 method 之一，大小写不敏感。method 未知时视为命中。
