@@ -8,6 +8,7 @@ import {
   expectAllowed,
   expectAsked,
   expectDenied,
+  expectRecent,
   Harness,
   safetyPermissions,
   STUB_MARK,
@@ -127,19 +128,6 @@ describe.skipIf(!E2E_ENABLED)("modes", () => {
 })
 
 describe.skipIf(!E2E_ENABLED)("safety test and stats", () => {
-  type Recent = { deny: number; ask: number }
-
-  /** Stats are written without awaiting, so poll until they land. */
-  async function recentAt(directory: string, expected: Recent) {
-    const deadline = Date.now() + 10_000
-    let recent: Recent = (await status(directory)).recent
-    while ((recent.deny !== expected.deny || recent.ask !== expected.ask) && Date.now() < deadline) {
-      await Bun.sleep(200)
-      recent = (await status(directory)).recent
-    }
-    expect(recent).toMatchObject(expected)
-  }
-
   test("test dry-runs a command in the current mode without running or counting it", async () => {
     const before = (await status()).recent
     const res = await h.rpc("test", { command: `ssh n1 "sudo bash -c 'rm -rf /data/*'"` })
@@ -184,10 +172,17 @@ describe.skipIf(!E2E_ENABLED)("safety test and stats", () => {
   })
 
   test("status counts the blocks of every directory", async () => {
-    const before: Recent = (await status(h.project2)).recent
+    const before = await h.recent(h.project2)
     expectDenied(await h.shell("kubectl delete ns prod"), "k8s-delete-namespace")
     expectAsked(await h.shell(`rm ${h.write("tmp/stats.txt", "x")}`), "rm-local")
-    await recentAt(h.project2, { deny: before.deny + 1, ask: before.ask + 1 })
+    await expectRecent(h, { deny: before.deny + 1, ask: before.ask + 1 }, h.project2)
+  })
+
+  test("status counts a self-protect deny of the write tool once", async () => {
+    const before = await h.recent()
+    const write = await h.call("write", { path: path.join(h.project, "opencode.json"), content: "{}" })
+    expect(write.result).toContain("[safety-policy:self-protect]")
+    await expectRecent(h, { deny: before.deny + 1, ask: before.ask })
   })
 })
 

@@ -5,7 +5,16 @@
 
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import path from "node:path"
-import { E2E_ENABLED, expectAllowed, expectAsked, expectDenied, Harness, safetyPermissions, STUB_MARK } from "./harness"
+import {
+  E2E_ENABLED,
+  expectAllowed,
+  expectAsked,
+  expectDenied,
+  expectRecent,
+  Harness,
+  safetyPermissions,
+  STUB_MARK,
+} from "./harness"
 
 setDefaultTimeout(180_000)
 
@@ -215,6 +224,13 @@ describe.skipIf(!E2E_ENABLED)("code mode fetch", () => {
     const call = await fetchCall(`http://127.0.0.2:${guarded.port}/x`, "PUT")
     expect(call.result).toContain("[safety-policy:protected-endpoint-write]")
     expect(hits).toEqual([])
+  })
+
+  test("counts a denied write once in the recent stats", async () => {
+    const before = await h.recent()
+    const call = await fetchCall(`http://127.0.0.2:${guarded.port}/x`, "PUT")
+    expect(call.result).toContain("[safety-policy:protected-endpoint-write]")
+    await expectRecent(h, { deny: before.deny + 1, ask: before.ask })
   })
 
   test("denies a Redfish action on any host", async () => {

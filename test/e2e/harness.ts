@@ -146,6 +146,12 @@ export interface RpcResult {
   body: any
 }
 
+/** The recent block stats in the `status` RPC output. */
+export interface Recent {
+  deny: number
+  ask: number
+}
+
 export interface PromptOptions {
   reply?: "once" | "always"
   directory?: string
@@ -314,6 +320,10 @@ export class Harness {
     }
   }
 
+  async recent(directory = this.project): Promise<Recent> {
+    return (await this.rpc("status", {}, directory)).body.output.recent
+  }
+
   async session(directory = this.project): Promise<string> {
     return (await this.api("POST", "/api/session", {}, directory)).data.id
   }
@@ -396,4 +406,19 @@ export function expectAsked(call: CallResult, ruleId: string) {
 export function expectAllowed(call: CallResult) {
   expect(call.permissions).toEqual([])
   expect(call.result).not.toContain("[safety-policy:")
+}
+
+/**
+ * The recent block stats reach `expected` and stay there. Stats are written without awaiting, so poll until they land,
+ * then wait a little longer so that a second record of the same block shows up.
+ */
+export async function expectRecent(h: Harness, expected: Recent, directory?: string) {
+  const deadline = Date.now() + 10_000
+  let recent = await h.recent(directory)
+  while ((recent.deny !== expected.deny || recent.ask !== expected.ask) && Date.now() < deadline) {
+    await Bun.sleep(200)
+    recent = await h.recent(directory)
+  }
+  await Bun.sleep(500)
+  expect(await h.recent(directory)).toMatchObject(expected)
 }

@@ -37,13 +37,30 @@ class Tui {
   }
 
   async waitFor(needle: string, present = true, timeoutMs = 30_000) {
+    const failure = present ? "never showed" : "still shows"
+    await this.until(() => this.screen().includes(needle) === present, failure, needle, timeoutMs)
+  }
+
+  /** Toasts wrap at any cell, even inside a word, so match the joined toast lines without whitespace. */
+  async waitForToast(needle: string) {
+    const squeezed = needle.replace(/\s/g, "")
+    await this.until(() => this.toast().includes(squeezed), "never toasted", needle)
+  }
+
+  /** The text of the boxes at the right edge, where toasts are drawn. */
+  private toast() {
+    const lines = this.screen().split("\n")
+    return lines.map((line) => /┃ {2}([^┃]*)┃ *$/.exec(line)?.[1] ?? "").join("").replace(/\s/g, "")
+  }
+
+  private async until(check: () => boolean, failure: string, needle: string, timeoutMs = 30_000) {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
-      if (this.screen().includes(needle) === present) return
+      if (check()) return
       await Bun.sleep(100)
     }
     const dump = this.screen().split("\n").filter((line) => line.trim()).join("\n")
-    throw new Error(`screen ${present ? "never showed" : "still shows"} ${JSON.stringify(needle)}:\n${dump}`)
+    throw new Error(`screen ${failure} ${JSON.stringify(needle)}:\n${dump}`)
   }
 
   /** The TUI is up and the plugin has registered `/safety`, which happens after the first frame. */
@@ -118,6 +135,7 @@ describe.skipIf(!E2E_ENABLED)("tui", () => {
     await tui.type("/safety status")
     tui.press(ENTER)
     await tui.waitFor("当前模式：strict（source: default）")
+    await tui.waitForToast("当前模式：strict（source: default）；最近 24 小时无拦截")
     await tui.type("/safety relaxed --ttl 1m")
     tui.press(ENTER)
     await tui.waitFor("当前模式：relaxed（source: runtime，1 分钟后回落）")
@@ -148,6 +166,12 @@ describe.skipIf(!E2E_ENABLED)("tui", () => {
     while (!h.requests.some((r) => r.results.some((result) => result.includes(ran))) && Date.now() < deadline)
       await Bun.sleep(100)
     expect(h.requests.some((r) => r.results.some((result) => result.includes(ran)))).toBe(true)
+  })
+
+  test("/safety status shows the blocks counted so far", async () => {
+    await tui.type("/safety status")
+    tui.press(ENTER)
+    await tui.waitForToast("当前模式：strict（source: runtime）；最近 24 小时：拒绝 0 次，需确认 1 次（rm-local ×1）")
   })
 })
 
