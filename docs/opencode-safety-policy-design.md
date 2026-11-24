@@ -621,7 +621,7 @@ opencode-safety-policy/       # 仓库根目录
    - 不使用 npm 源。用户在 `~/.config/opencode/opencode.json` 的 `plugins` 中写 `"package": "github:DaoCloud/opencode-safety-policy#v0.1.0"`。OpenCode 用 npm 的 Arborist 拉取该 tag，按 `files` 打包后装入用户缓存目录（`~/.cache/opencode/npm/`），版本锁定到 tag 对应的 commit。
    - 本机需要 `git` 并能访问 GitHub。升级时修改 tag 并重启 OpenCode。
    - Arborist 默认会安装 `peerDependencies`。`@opencode/plugin` 由 OpenCode 在运行时提供，所以在 `peerDependenciesMeta` 中标为 optional，避免每次安装都额外拉取它的整棵依赖树（约 180 MB）。
-   - 插件装在用户可写的目录中，适合个人防误操作。需要强制基线时按第 2 点部署。
+   - 插件装在用户可写的目录中，而且用户级配置中的插件会被项目配置的 `"plugins": ["-*"]` 卸载（已用 OpenCode 2.4.1 实测），所以只适合个人防误操作。需要强制基线时按第 2 点部署。
 2. **跳板机 / 管理主机（统一强制基线，重要：防自动发现冲突与同 ID 空插件劫持）**
    - **不要**同时将插件放入 `/etc/opencode/plugins/` 并在 `/etc/opencode/opencode.json` 中声明另一份拷贝——OpenCode Supervisor 先加载自动发现目录（`options: {}`），后加载的 `opencode.json` 条目会因 `Duplicate plugin ID` 失败并丢弃 `options`；而且仅靠自动发现加载的插件，可被项目级 `.opencode/opencode.json` 中的 `"plugins": ["-*"]` 卸载。
    - `Duplicate plugin ID` 只在同一 ID 来自不同路径时出现。显式配置自动发现目录本身（`"package": "./plugins/safety-policy"`）指向同一路径，显式条目替换自动发现条目并带上 `options`，不报错。仍推荐下面的非自动发现目录，避免目录里多出一份拷贝时插件静默退化为无 `options` 的默认配置。
