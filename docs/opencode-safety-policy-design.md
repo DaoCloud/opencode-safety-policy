@@ -326,7 +326,7 @@
    - Server 插件（`index.ts`）通过 `ctx.rpc.register` 注册 `rpc.ts` 定义的 RPC。RPC `id` 与插件 id 相同，为 `opencode-safety-policy`，避免被其他插件的同名 RPC 覆盖。HTTP 端点为 `/api/rpc/opencode-safety-policy/<method>`。方法为 `status`、`setMode`、`test`，下文简称 `safety.status` 等。
    - `safety.status` 返回当前模式、来源、是否锁定和 TTL 到期时间。`safety.setMode` 接收模式与可选的 `ttlMs`，返回切换后的状态。
    - `safety.setMode` 在 `OPENCODE_SAFETY_LOCK_MODE` 生效时直接拒绝，返回契约中声明的 `locked` 错误。handler 抛出的普通异常会被 OpenCode 转成不带原因的 `rpc.internal`，TUI 无法展示拒绝原因。
-   - TUI 插件（`tui.ts`，基于 `@opencode/plugin/tui`）通过 `ctx.keymap.layer` 注册 `slash: { name: "safety", arguments: true }`（并加入 Command Palette），执行时通过 `ctx.client.rpc(definition)` 调用 Server RPC，使用 `ctx.ui.toast.show(...)` 即时展示模式切换/状态，使用 `ctx.ui.dialog.alert(...)` 展示 `/safety test "<cmd>"` 的多行拆壳与命中详情。
+   - TUI 插件（`tui.ts`，基于 `@opencode/plugin/tui`）通过 `ctx.keymap.layer` 注册 `slash: { name: "safety", arguments: true }`（并加入 Command Palette）。layer 必须声明 `mode: "global"`：默认的 `base` 模式在斜杠补全或 Command Palette 打开时不可达，命令只能盲输执行，无法被发现。命令执行时通过 `ctx.client.rpc(definition)` 调用 Server RPC，使用 `ctx.ui.toast.show(...)` 即时展示模式切换/状态，使用 `ctx.ui.dialog.alert(...)` 展示 `/safety test "<cmd>"` 的多行拆壳与命中详情。
    - TUI 插件同时通过 `ctx.data.on("permission.asked", ...)` 监听审批事件，对 `message` 以 `[safety-policy:` 开头的请求弹 Toast 展示规则原因（TUI 审批弹窗本身不渲染 `message`）。
    - **完全不写入 `session_inbox`**（不使用 `delivery: "queue"` 的 `session.synthetic`，彻底杜绝空闲或运行结束时触发幽灵 LLM 回合及过滤后引发的 400 错误，也避免 TUI 自动补全出现重复 `/safety`）。
 2. **终端 CLI 与无 TUI 场景兜底**：
