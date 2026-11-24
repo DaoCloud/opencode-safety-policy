@@ -361,7 +361,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### P1-E2E
 
 - [x] P1-1、P1-2 的判定在真实 `opencode serve` 上与单元测试一致（`test/e2e/analyzer.test.ts`）
-- [ ] 按[手工试用指南](./opencode-safety-policy-manual-test.md)用真实模型走一遍，本阶段新增的拦截行为已补进用例
+- [x] 按[手工试用指南](./opencode-safety-policy-manual-test.md)用真实模型走一遍，本阶段新增的拦截行为已补进用例
 - [x] `bun test` 全绿，覆盖嵌套引号、heredoc、管道、Redfish/UFM 写请求和脚本预扫
 - [x] `curl -X POST https://<bmc>/redfish/v1/.../VirtualMedia.InsertMedia` 被拦截（`test/e2e/analyzer.test.ts`）
 - [x] Code Mode `fetch` 写受保护端点被拦截，包括 307/308 重定向（`test/e2e/analyzer.test.ts`）
@@ -479,7 +479,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [x] P1-4 webfetch 与 Code Mode fetch
 - [x] P1-5 脚本预扫与 TOCTOU
 - [x] P1-6 /safety test 与 CLI
-- [ ] P1-E2E
+- [x] P1-E2E
 - [ ] P2-1 自保护扩展
 - [ ] P2-2 evaluate 的 deny 级复检
 - [ ] P2-3 TUI 展示审批原因
