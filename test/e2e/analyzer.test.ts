@@ -1,8 +1,8 @@
-/** P1-1 and P1-2 analyzer cases through a real `opencode serve`, with real files for the script inputs. */
+/** P1-1, P1-2 and P1-5 analyzer cases through a real `opencode serve`, with real files for the script inputs. */
 
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import path from "node:path"
-import { E2E_ENABLED, expectAsked, expectDenied, Harness, STUB_MARK } from "./harness"
+import { E2E_ENABLED, expectAllowed, expectAsked, expectDenied, Harness, STUB_MARK } from "./harness"
 
 setDefaultTimeout(180_000)
 
@@ -15,6 +15,8 @@ beforeAll(async () => {
   h.write("ok.sh", "echo SCRIPT-OK\n")
   h.write("body-cd.sh", "cd /\nrm -rf etc\n")
   h.write("sub/w.sh", "rm -rf /data\n")
+  h.write("danger.py", "import shutil\nshutil.rmtree('/data')\n")
+  h.write("ok.py", "print('PY-OK')\n")
   await h.start()
 })
 
@@ -55,6 +57,13 @@ const denied: [string, string][] = [
   ["cat <<'EOF' | ssh n1 bash\nuptime\nEOF", "opaque"],
   ["F=danger.sh; bash < $F", "opaque"],
   ["bash < missing.sh", "opaque"],
+  // P1-5: script arguments, interpreter code and scripts written earlier in the command.
+  ["bash danger.sh", "rm-system-path"],
+  ["python3 danger.py", "rm-system-path"],
+  [`python3 -c 'import os; os.system("rm -rf /data")'`, "rm-system-path"],
+  [`node -e 'require("fs").rmSync("/data", { recursive: true })'`, "rm-system-path"],
+  ["cat > run.sh <<'EOF'\necho hi\nEOF\nbash run.sh", "opaque"],
+  ["python3 missing.py", "opaque"],
 ]
 
 describe.skipIf(!E2E_ENABLED)("strict", () => {
@@ -73,6 +82,12 @@ describe.skipIf(!E2E_ENABLED)("strict", () => {
       "[safety-policy:script-file] 从本地文件读取脚本执行（ok.sh），执行前内容可能被修改",
     )
     expect(call.result).toContain("SCRIPT-OK")
+  })
+
+  test("asks before running a readable interpreter script that hits no rule", async () => {
+    const call = await h.shell("python3 ok.py")
+    expectAsked(call, "script-file")
+    expect(call.result).toContain("PY-OK")
   })
 })
 
@@ -99,5 +114,15 @@ describe.skipIf(!E2E_ENABLED)("relaxed", () => {
 
   test("still denies a critical hit inside a script", async () => {
     expectDenied(await h.shell("bash < danger.sh"), "rm-system-path")
+  })
+
+  test("allows a readable script that hits no rule", async () => {
+    const call = await h.shell("bash ok.sh")
+    expectAllowed(call)
+    expect(call.result).toContain("SCRIPT-OK")
+  })
+
+  test("still denies a critical hit in a script written by the same command", async () => {
+    expectDenied(await h.shell("cat > run.sh <<'EOF'\nrm -rf /data\nEOF\nbash run.sh"), "rm-system-path")
   })
 })

@@ -34,6 +34,9 @@ opencode
 | 5 | 先 `touch a.txt`，再 `rm a.txt` | 弹出 `Permission required` 审批，同时 Toast 显示 `[safety-policy:rm-local] 删除本机文件需要确认`；选 `Allow once` 后文件被删除 |
 | 6 | 第 5 项选 `Always allow`，再重复一次 | 仍然弹审批 |
 | 7 | `ssh ocsp-no-such-host uptime` | 放行，输出 ssh 无法解析主机名的错误 |
+| 8 | `python3 -c 'import os; os.system("kubectl delete ns ocsp-not-exist")'` | 拦截，`[safety-policy:k8s-delete-namespace]`，原因以“（解释器代码预扫）”结尾 |
+| 9 | `printf 'echo hi\n' > r.sh && bash r.sh` | 拦截，`[safety-policy:opaque]`，原因为同一条命令先写入再执行脚本 |
+| 10 | 先让模型用写文件工具创建内容为 `echo SCRIPT-OK` 的 `ok.sh`，再执行 `bash ok.sh` | 弹出审批，Toast 显示 `[safety-policy:script-file] 从本地文件读取脚本执行（ok.sh），执行前内容可能被修改`；选 `Allow once` 后输出 `SCRIPT-OK` |
 
 **判定方法**：看工具调用的结果，不看模型的总结。
 
@@ -48,7 +51,8 @@ opencode
 | 1 | `/safety relaxed --ttl 5m` | Toast `当前模式：relaxed（source: runtime，5 分钟后回落）` |
 | 2 | 重复第 3 节第 2 项 | 由拦截变为弹审批 |
 | 3 | 重复第 3 节第 1 项 | 仍然拦截，critical 级规则在 relaxed 下也拒绝 |
-| 4 | `/safety strict` | Toast `当前模式：strict（source: runtime）`，第 2 项恢复拦截 |
+| 4 | 重复第 3 节第 10 项的 `bash ok.sh` | 直接执行，不弹审批 |
+| 5 | `/safety strict` | Toast `当前模式：strict（source: runtime）`，第 2 项恢复拦截 |
 
 TTL 单位为 `s`、`m`、`h`。到期后自动回落到切换前的模式。
 

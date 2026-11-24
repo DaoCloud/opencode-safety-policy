@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { tokenize } from "../src/tokenizer"
-import { newWalk, unwrap, unwrapScriptFile, type Atom } from "../src/unwrapper"
+import { newWalk, unwrap, unwrapScriptFile, type Atom, type ScriptFile } from "../src/unwrapper"
 
 const atoms = (input: string) => unwrap(tokenize(input))
 const view = (atom: Atom) => ({
@@ -13,6 +13,12 @@ const only = (input: string) => {
   const result = atoms(input)
   expect(result).toHaveLength(1)
   return view(result[0]!)
+}
+const marker = (input: string) => {
+  const result = atoms(input).filter((atom) => atom.scriptFile)
+  expect(result).toHaveLength(1)
+  const atom = result[0]!
+  return { scriptFile: atom.scriptFile, chdir: atom.chdir, ...view(atom) }
 }
 
 describe("plain commands", () => {
@@ -109,7 +115,16 @@ describe("local wrappers", () => {
     expect(only(input)).toMatchObject({ argv, isRemote: false, wrapperChain })
   })
 
-  test.each(["command -v rm", "command -pV rm", "ionice -p 1", "doas -C /etc/doas.conf", "su", "su root script.sh", "exec", "eval", "xargs -0"])(
+  test.each([
+    "command -v rm",
+    "command -pV rm",
+    "ionice -p 1",
+    "doas -C /etc/doas.conf",
+    "su",
+    "exec",
+    "eval",
+    "xargs -0",
+  ])(
     "%s does not unwrap a command",
     (input) => {
       expect(only(input).wrapperChain).toEqual([])
@@ -200,19 +215,16 @@ describe("stdin", () => {
     expect(atom?.stdin).toBeUndefined()
   })
 
-  test.each(["bash script.sh <<<'rm x'", "bash"])("%s does not run stdin", (input) => {
-    expect(only(input).wrapperChain).toEqual([])
+  test("bash does not run stdin", () => {
+    expect(only("bash").wrapperChain).toEqual([])
+  })
+
+  test("a script argument does not run stdin", () => {
+    expect(atoms("bash script.sh <<<'rm x'").find((atom) => atom.name === "rm")).toBeUndefined()
   })
 })
 
 describe("script files on stdin", () => {
-  const marker = (input: string) => {
-    const result = atoms(input).filter((atom) => atom.scriptFile)
-    expect(result).toHaveLength(1)
-    const atom = result[0]!
-    return { scriptFile: atom.scriptFile, chdir: atom.chdir, ...view(atom) }
-  }
-
   test.each([
     ["bash < x.sh", ["bash -s"], false],
     ["sh -s a <x.sh", ["sh -s"], false],
@@ -264,8 +276,6 @@ describe("script files on stdin", () => {
   test.each([
     ["ssh h 'bash < x.sh'", "bash"],
     ["ssh h 'exec < x.sh; bash'", "bash"],
-    ["python3 < x.py", "python3"],
-    ["bash x.sh < y.sh", "bash"],
     ["psql < dump.sql", "psql"],
   ])("%s does not read a local script", (input, name) => {
     const result = atoms(input)
@@ -289,6 +299,72 @@ describe("script files on stdin", () => {
     walk.chars = 3
     expect(unwrapScriptFile("rm x", file!, walk)).toMatchObject([{ opaque: "too-long" }])
     expect(unwrapScriptFile("rm x", file!, walk)).toEqual([])
+  })
+})
+
+describe("script arguments and interpreter code", () => {
+  test.each<[string, ScriptFile, string[]]>([
+    ["bash x.sh", { path: "x.sh", argument: true }, ["bash"]],
+    ["sh -e x.sh a", { path: "x.sh", argument: true }, ["sh"]],
+    ["bash -- -c", { path: "-c", argument: true }, ["bash"]],
+    ["su root x.sh", { path: "x.sh", argument: true }, ["su"]],
+    ["bash x.sh < y.sh", { path: "x.sh", argument: true, piped: { path: "y.sh" } }, ["bash"]],
+    ["python3 < x.py", { path: "x.py", language: "python" }, ["python3"]],
+    ["sudo python3 x.py", { path: "x.py", argument: true, language: "python" }, ["sudo", "python3"]],
+    ["/usr/bin/python3.11 x.py", { path: "x.py", argument: true, language: "python" }, ["python3.11"]],
+    ["perl -w x.pl", { path: "x.pl", argument: true, language: "perl" }, ["perl"]],
+    ["ruby x.rb", { path: "x.rb", argument: true, language: "ruby" }, ["ruby"]],
+    ["node x", { path: "x", argument: true, language: "node" }, ["node"]],
+  ])("%s runs a local script", (input, scriptFile, wrapperChain) => {
+    const atom = marker(input)
+    expect(atom.scriptFile).toEqual(scriptFile)
+    expect(atom).toMatchObject({ wrapperChain, isRemote: false })
+  })
+
+  test("the argument script is opened in the directory the wrapper changes to", () => {
+    expect(marker("sudo -D /a python3 x.py")).toMatchObject({
+      scriptFile: { path: "x.py", chdir: ["/a"] },
+      chdir: ["/a"],
+    })
+  })
+
+  test.each([
+    "ssh h bash x.sh",
+    "bash -s x.sh",
+    "python3 -m pip install x.py",
+    "python3 -V x.py",
+    "python3 -",
+    "source x.sh",
+    "./run.sh",
+  ])("%s does not read a local script", (input) => {
+    expect(atoms(input).filter((atom) => atom.scriptFile || atom.opaque)).toEqual([])
+  })
+
+  test.each([
+    [`python3 -c 'import os; os.system("rm -rf /x")'`, ["rm", "-rf", "/x"], ["python3 -c"], false],
+    [`python3 -c 'import shutil; shutil.rmtree("/x")'`, ["rm", "-rf", "/x"], ["python3 -c"], false],
+    ["perl -e 'system(qq{rm x})'", ["rm", "x"], ["perl -e"], false],
+    [`ruby -e 'system("rm x")'`, ["rm", "x"], ["ruby -e"], false],
+    [`node -e 'require("fs").rmSync("/x", {recursive: true})'`, ["rm", "-rf", "/x"], ["node -e"], false],
+    [`echo 'import os; os.system("rm x")' | python3 -`, ["rm", "x"], ["python3"], false],
+    ["python3 <<'EOF'\nimport os\nos.system('rm x')\nEOF", ["rm", "x"], ["python3"], false],
+    [
+      `bash -c 'python3 -c "import shutil; shutil.rmtree(\\"/x\\")"'`,
+      ["rm", "-rf", "/x"],
+      ["bash -c", "python3 -c"],
+      false,
+    ],
+    [`ssh h "python3 -c 'import os; os.system(\\"rm x\\")'"`, ["rm", "x"], ["ssh", "python3 -c"], true],
+  ])("%s prescans the code", (input, argv, wrapperChain, isRemote) => {
+    expect(atoms(input).find((atom) => atom.prescan)).toMatchObject({ argv, wrapperChain, isRemote, prescan: true })
+  })
+
+  test.each([
+    "python3 -c 'print(1)'",
+    `python3 -c 'import os' -c 'os.system("rm x")'`,
+    `python3 -V -c 'import os; os.system("rm x")'`,
+  ])("%s yields no prescanned command", (input) => {
+    expect(atoms(input).filter((atom) => atom.prescan)).toEqual([])
   })
 })
 
@@ -808,7 +884,7 @@ describe("shell -c", () => {
     for (const atom of result) expect(atom.wrapperChain).toEqual(wrapperChain)
   })
 
-  test.each(["bash script.sh", "bash -c", "sh -s", "bash -- -c"])("%s is not unwrapped", (input) => {
+  test.each(["bash -c", "sh -s"])("%s is not unwrapped", (input) => {
     expect(only(input).wrapperChain).toEqual([])
   })
 })

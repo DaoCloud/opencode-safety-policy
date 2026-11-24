@@ -10,9 +10,11 @@
  * `$PARALLEL_INPUT`. Inline stdin (heredoc / here-string) flows into wrapped commands, and a shell or `ssh` without
  * a command runs it as a script (`bash <<EOF`, `ssh host <<EOF`). A shell or interpreter that runs a script from
  * a pipe or a process substitution (`curl ... | bash`, `bash <(curl ...)`) yields a `piped-script` opaque atom. The
- * output of a literal `echo` / `printf` upstream is inline stdin too. A local file redirected to a shell or `ssh`
- * (`bash < x.sh`) yields a marker atom with `scriptFile`; the caller reads the file and walks its content with
- * `unwrapScriptFile`.
+ * output of a literal `echo` / `printf` upstream is inline stdin too. A local file redirected to a shell, `ssh` or an
+ * interpreter (`bash < x.sh`, `python3 < x.py`), or passed to one as the script (`bash x.sh`, `python3 x.py`), yields a
+ * marker atom with `scriptFile`; the caller reads the file and walks its content with `unwrapScriptFile` or
+ * `unwrapCode`. Interpreter inline code (`python3 -c`, `node -e`) is prescanned for shell commands (design 3.1
+ * Stage 3.5); the atoms found in interpreter code carry `prescan`.
  */
 
 import path from "node:path"
@@ -27,6 +29,7 @@ import {
   type OpaqueReason,
   type Script,
 } from "./tokenizer"
+import { scanCode, type Language } from "./script-scanner"
 
 export interface Atom {
   name: string
@@ -55,19 +58,27 @@ export interface Atom {
   chdir?: (string | null)[]
   /** Set when a script could not be parsed (`name` is `""`) or the wrapper nesting is too deep. */
   opaque?: OpaqueReason
-  /** Set on a marker atom (`name` is `""`) for a local file that the wrapper runs as a script from stdin. */
-  scriptFile?: StdinFile
+  /** Set on a marker atom (`name` is `""`) for a local file that the wrapper runs as a script. */
+  scriptFile?: ScriptFile
+  /** Found in interpreter code by the prescan, so only rules judge it. */
+  prescan?: boolean
 }
 
-/** A local file on stdin. */
-export interface StdinFile {
+/** A local file run as a script: on stdin, or as the script argument of a shell or an interpreter. */
+export interface ScriptFile {
   path: string
-  /** Wrapper directory changes where the redirect opens the file, like `Atom.chdir`. */
+  /** Wrapper directory changes where the file is opened, like `Atom.chdir`. */
   chdir?: (string | null)[]
+  /** The interpreter that runs the file; a shell when undefined. */
+  language?: Language
+  /** The file is the script argument (`bash x.sh`), not stdin. */
+  argument?: boolean
+  /** Stdin of an argument script when it is not inline text. */
+  piped?: Piped
 }
 
 /** Stdin that is not inline text: `true` for a pipe whose content is unknown, or a local file. */
-type Piped = boolean | StdinFile
+type Piped = boolean | ScriptFile
 
 interface Context {
   isRemote: boolean
@@ -78,13 +89,16 @@ interface Context {
   stdin?: string
   piped?: Piped
   chdir?: (string | null)[]
+  prescan?: boolean
 }
 
 type Inner =
   | { argv: string[]; expanded: boolean[]; assignments?: string[] }
   | { script: string }
   /** The wrapper runs a local file as a script. */
-  | { file: StdinFile }
+  | { file: ScriptFile }
+  /** Interpreter code to prescan. */
+  | { code: string; language: Language }
   /** The wrapper runs code that cannot be known statically. */
   | { opaque: OpaqueReason }
 
@@ -97,6 +111,8 @@ interface Layer {
   readsStdin?: boolean
   /** The inner command runs in this directory; `null` when it is unknown statically. */
   chdir?: string | null
+  /** The wrapper command is judged too, like the wrappers in `KEEP`. */
+  keep?: boolean
 }
 
 type Unwrapper = (args: string[], expanded: boolean[], stdin?: string, piped?: Piped) => Layer[]
@@ -160,10 +176,48 @@ export function unwrap(script: Script, walk = newWalk()): Atom[] {
   return walk.atoms.slice(start)
 }
 
-/** Atoms of the content of the file of a `scriptFile` marker, run in the context of the marker. */
+/**
+ * Atoms of the content of the file of a `scriptFile` marker, run as a shell script in the context of the marker. A
+ * command atom that runs a script by its path can be the marker too.
+ */
 export function unwrapScriptFile(text: string, marker: Atom, walk: Walk): Atom[] {
   if (walk.stopped) return []
   const start = walk.atoms.length
+  const context = markerContext(marker)
+  if (text.length > walk.chars) {
+    stop(walk, atomBase(context, marker.command))
+  } else {
+    walk.chars -= text.length
+    walkScript(tokenize(text, walk.braces), context, walk, marker.command)
+  }
+  return walk.atoms.slice(start)
+}
+
+/** Atoms of the commands found in interpreter `code`, run in the context of `marker` like `unwrapScriptFile`. */
+export function unwrapCode(code: string, language: Language, marker: Atom, walk: Walk): Atom[] {
+  if (walk.stopped) return []
+  const start = walk.atoms.length
+  walkCode(code, language, markerContext(marker), marker.command, walk)
+  return walk.atoms.slice(start)
+}
+
+/** The interpreter language of the command `name`. */
+export function languageOf(name: string): Language | undefined {
+  if (PYTHON_VERSION.test(name)) return "python"
+  return Object.hasOwn(LANGUAGES, name) ? LANGUAGES[name] : undefined
+}
+
+/** What a literal `echo` / `printf`, or a `cat` / `tee` of inline stdin, writes. */
+export function printedText(atom: Atom): string | undefined {
+  const [, ...args] = atom.argv
+  if (atom.name === "tee" || (atom.name === "cat" && args.every((arg) => arg === "-"))) return atom.stdin
+  if (atom.expanded.some(Boolean)) return undefined
+  if (atom.name === "echo") return echoOutput(args)
+  if (atom.name === "printf") return printfOutput(args)
+  return undefined
+}
+
+function markerContext(marker: Atom): Context {
   const context: Context = {
     isRemote: marker.isRemote,
     localCommands: marker.localCommands,
@@ -172,13 +226,24 @@ export function unwrapScriptFile(text: string, marker: Atom, walk: Walk): Atom[]
   }
   if (marker.targetHost !== undefined) context.targetHost = marker.targetHost
   if (marker.chdir) context.chdir = marker.chdir
-  if (text.length > walk.chars) {
-    stop(walk, atomBase(context, marker.command))
-  } else {
-    walk.chars -= text.length
-    walkScript(tokenize(text, walk.braces), context, walk, marker.command)
+  // An argument script inherits the stdin of its wrapper; a script on stdin has none left.
+  if (marker.stdin !== undefined) context.stdin = marker.stdin
+  if (marker.scriptFile?.piped) context.piped = marker.scriptFile.piped
+  if (marker.prescan) context.prescan = true
+  return context
+}
+
+/** Walks the commands found in interpreter `code` as atoms with `prescan`. */
+function walkCode(code: string, language: Language, context: Context, owner: Command, walk: Walk) {
+  if (code.length > walk.chars) return stop(walk, atomBase(context, owner))
+  walk.chars -= code.length
+  const prescan: Context = { ...context, prescan: true }
+  for (const command of scanCode(code, language)) {
+    if (command.length > walk.chars) return stop(walk, atomBase(context, owner))
+    walk.chars -= command.length
+    walkScript(tokenize(command, walk.braces), prescan, walk, owner)
+    if (walk.stopped) return
   }
-  return walk.atoms.slice(start)
 }
 
 function emptyCommand(): Command {
@@ -191,9 +256,11 @@ function emit(walk: Walk, atom: Atom) {
   stop(walk, atom)
 }
 
+/** Ends the walk. The atoms left out may be outside the prescan, so the `too-long` atom is never a prescan atom. */
 function stop(walk: Walk, atom: Atom) {
   walk.stopped = true
-  walk.atoms.push({ ...atom, name: "", argv: [], expanded: [], assignments: [], opaque: "too-long" })
+  const { prescan: _, ...rest } = atom
+  walk.atoms.push({ ...rest, name: "", argv: [], expanded: [], assignments: [], opaque: "too-long" })
 }
 
 interface Input {
@@ -252,7 +319,7 @@ function walkScript(script: Script, context: Context, walk: Walk, owner: Command
  * The last stdin redirect wins; a pipe or a file on stdin replaces the inherited input, and the output of a
  * literal `echo` / `printf` upstream is inline text. `<&0` and `< /dev/stdin` keep it, as does a target of a remote
  * shell known only at run time, `<&-` closes it, `<&N` or `< /dev/fd/N` duplicates a descriptor whose content is
- * unknown, and `/dev/null` is empty. A local file is kept as a `StdinFile`; a file of a remote shell cannot be read.
+ * unknown, and `/dev/null` is empty. A local file is kept as a `ScriptFile`; a file of a remote shell cannot be read.
  */
 function stdinOf(command: Command, context: Context, redirects = command.redirects): Input {
   const pipe = command.connector === "|" || !!command.piped
@@ -342,12 +409,13 @@ function descriptorOf(file: string): number | undefined {
 }
 
 /**
- * How a shell or interpreter reads the script file `arg`: `"stdin"` for stdin or a path known only at run time
- * (which may be `/dev/stdin`), `"opaque"` for a process substitution or another descriptor.
+ * How a shell or interpreter reads the script file `arg`: `"stdin"` for `/dev/stdin`, `"dynamic"` for a path known
+ * only at run time (which may be `/dev/stdin`), `"opaque"` for a process substitution or another descriptor, and
+ * `undefined` for a local file.
  */
-function scriptFile(arg: string, expanded: boolean | undefined): "stdin" | "opaque" | undefined {
+function scriptFile(arg: string, expanded: boolean | undefined): "stdin" | "dynamic" | "opaque" | undefined {
   if (isProcessSubstitution(arg, expanded)) return "opaque"
-  if (expanded) return "stdin"
+  if (expanded) return "dynamic"
   const descriptor = descriptorOf(arg)
   if (descriptor === undefined) return undefined
   return descriptor === 0 ? "stdin" : "opaque"
@@ -367,6 +435,7 @@ function atomBase(context: Context, command: Command): Atom {
   if (context.targetHost !== undefined) atom.targetHost = context.targetHost
   if (context.stdin !== undefined) atom.stdin = context.stdin
   if (context.chdir) atom.chdir = context.chdir
+  if (context.prescan) atom.prescan = true
   return atom
 }
 
@@ -385,12 +454,15 @@ function walkArgv(
   const atom: Atom = { ...atomBase(context, command), name, argv, expanded, assignments }
   const unwrapper = isDynamicName(argv[0] ?? "", expanded[0] ?? false) ? undefined : wrapperFor(name)
   if (!unwrapper) return emit(walk, atom)
-  const layers = unwrapper(argv.slice(1), expanded.slice(1), context.stdin, context.piped)
+  // A script argument of a remote command is a remote file.
+  const layers = unwrapper(argv.slice(1), expanded.slice(1), context.stdin, context.piped).filter(
+    (layer) => !(context.isRemote && "file" in layer.inner && layer.inner.file.argument),
+  )
   if (!layers.length) {
     emit(walk, atom)
     return name === "exec" ? inputOf(context) : undefined
   }
-  if (KEEP.has(name)) emit(walk, atom)
+  if (KEEP.has(name) || layers.some((layer) => layer.keep)) emit(walk, atom)
   if (context.depth >= MAX_DEPTH) return emit(walk, { ...atom, opaque: "too-deep" })
   let shell: Input | void = undefined
   for (const layer of layers) {
@@ -400,6 +472,7 @@ function walkArgv(
       wrapperChain: [...context.wrapperChain, layer.label],
       depth: context.depth + 1,
     }
+    if (context.prescan) next.prescan = true
     const host = layer.host ?? context.targetHost
     if (host !== undefined) next.targetHost = host
     if (!layer.readsStdin) {
@@ -413,7 +486,11 @@ function walkArgv(
     if ("opaque" in inner) {
       emit(walk, { ...atomBase(next, command), opaque: inner.opaque })
     } else if ("file" in inner) {
-      emit(walk, { ...atomBase(next, command), scriptFile: inner.file })
+      // The wrapper opens a script argument in the directory it changes to.
+      const file = inner.file.argument && next.chdir ? { ...inner.file, chdir: next.chdir } : inner.file
+      emit(walk, { ...atomBase(next, command), scriptFile: file })
+    } else if ("code" in inner) {
+      walkCode(inner.code, inner.language, next, command, walk)
     } else if ("argv" in inner) {
       result = walkArgv(inner.argv, inner.expanded, [...assignments, ...(inner.assignments ?? [])], next, command, walk)
     } else if (inner.script.length > walk.chars) {
@@ -655,9 +732,19 @@ function shell(name: string): Unwrapper {
     if (command) return script === undefined ? [] : [{ label: `${name} -c`, inner: { script } }]
     const file = script === undefined ? "stdin" : scriptFile(script, expanded[i])
     if (file === "opaque") return [opaqueLayer(name)]
-    if (!fromStdin && file !== "stdin") return []
-    return stdinLayers(`${name} -s`, stdin, piped)
+    if (fromStdin || file === "stdin") return stdinLayers(`${name} -s`, stdin, piped)
+    const layers = [argumentLayer(name, script!, piped)]
+    if (file === "dynamic") layers.push(...stdinLayers(`${name} -s`, stdin, piped))
+    return layers
   }
+}
+
+/** A local script file passed as an argument; the script inherits the stdin of the wrapper. */
+function argumentLayer(label: string, path: string, piped: Piped | undefined, language?: Language): Layer {
+  const file: ScriptFile = { path, argument: true }
+  if (language) file.language = language
+  if (piped) file.piped = piped
+  return { label, inner: { file }, keep: true }
 }
 
 function sshHost(destination: string) {
@@ -1367,32 +1454,70 @@ function source(name: string): Unwrapper {
     const i = args[0] === "--" ? 1 : 0
     const file = args[i] === undefined ? undefined : scriptFile(args[i]!, expanded[i])
     if (file === "opaque") return [opaqueLayer(name)]
-    return file === "stdin" ? stdinLayers(name, stdin, piped) : []
+    return file === "stdin" || file === "dynamic" ? stdinLayers(name, stdin, piped) : []
   }
 }
 
 interface InterpreterSpec {
+  language: Language
   options: OptionSpec
-  /** Options whose value is the program, so no script file or stdin is read. */
+  /** Options whose value is (a line of) the program. */
   code: string[]
+  /** Options that run a module instead of a program; it is not prescanned. */
+  module: string[]
   /** Options that only print information. */
   info: string[]
 }
 
 const INTERPRETERS = {
-  python: { options: OPTION_SPECS.python, code: ["-c", "-m"], info: ["-V", "--version", "-h", "--help"] },
-  perl: { options: OPTION_SPECS.perl, code: ["-e", "-E"], info: ["-v", "-V", "--version", "-h", "--help"] },
-  ruby: { options: OPTION_SPECS.ruby, code: ["-e"], info: ["-v", "--version", "-h", "--help"] },
+  python: {
+    language: "python",
+    options: OPTION_SPECS.python,
+    code: ["-c"],
+    module: ["-m"],
+    info: ["-V", "--version", "-h", "--help"],
+  },
+  perl: {
+    language: "perl",
+    options: OPTION_SPECS.perl,
+    code: ["-e", "-E"],
+    module: [],
+    info: ["-v", "-V", "--version", "-h", "--help"],
+  },
+  ruby: {
+    language: "ruby",
+    options: OPTION_SPECS.ruby,
+    code: ["-e"],
+    module: [],
+    info: ["-v", "--version", "-h", "--help"],
+  },
   node: {
+    language: "node",
     options: OPTION_SPECS.node,
     code: ["-e", "-p", "--eval", "--print"],
+    module: [],
     info: ["-v", "--version", "-h", "--help", "-c", "--check"],
   },
 } satisfies Record<string, InterpreterSpec>
 
-/** An interpreter that runs its program from a pipe (no script or `-`) or from a process substitution. */
-function interpreter(name: string, { options, code, info }: InterpreterSpec): Unwrapper {
-  return (args, expanded, _, piped) => {
+const LANGUAGES: Record<string, Language> = {
+  python: "python",
+  python2: "python",
+  python3: "python",
+  perl: "perl",
+  ruby: "ruby",
+  node: "node",
+  nodejs: "node",
+}
+
+/**
+ * An interpreter and its program (design 3.1 Stage 3.5): inline code, a script argument, or stdin (inline text, a
+ * local file, or an opaque pipe). A process substitution as the script is opaque.
+ */
+function interpreter(name: string, { language, options, code, module, info }: InterpreterSpec): Unwrapper {
+  return (args, expanded, stdin, piped) => {
+    const programs: string[] = []
+    let label = name
     let i = 0
     while (i < args.length) {
       if (args[i] === "--") {
@@ -1401,15 +1526,35 @@ function interpreter(name: string, { options, code, info }: InterpreterSpec): Un
       }
       const option = readOption(args, i, options)
       if (!option) break
-      if (code.includes(option.name) || info.includes(option.name)) return []
+      // Options after the code are not checked: python passes them to the program.
+      if (code.includes(option.name) && option.value !== undefined) {
+        if (!programs.length) label = `${name} ${option.name}`
+        programs.push(option.value)
+        if (language === "python") break
+      } else if (!programs.length && (module.includes(option.name) || info.includes(option.name))) return []
       i = option.next
     }
+    if (programs.length) return [{ label, inner: { code: programs.join("\n"), language }, keep: true }]
     const script = args[i]
     const file = script === undefined || script === "-" ? "stdin" : scriptFile(script, expanded[i])
     if (file === "opaque") return [opaqueLayer(name)]
-    // A script file on stdin is prescanned with other interpreter scripts (design 3.1 Stage 3.5).
-    return piped === true && file === "stdin" ? [opaqueLayer(name)] : []
+    if (file === "stdin") return interpreterStdin(name, language, stdin, piped)
+    const layers = [argumentLayer(name, script!, piped, language)]
+    if (file === "dynamic") layers.push(...interpreterStdin(name, language, stdin, piped))
+    return layers
   }
+}
+
+/** The program of an interpreter on stdin: inline text, a local file, or an opaque pipe. */
+function interpreterStdin(
+  label: string,
+  language: Language,
+  stdin: string | undefined,
+  piped: Piped | undefined,
+): Layer[] {
+  if (stdin !== undefined) return [{ label, inner: { code: stdin, language }, readsStdin: true, keep: true }]
+  if (typeof piped === "object") return [{ label, inner: { file: { ...piped, language } }, readsStdin: true, keep: true }]
+  return piped ? [opaqueLayer(label)] : []
 }
 
 // `crictl exec` filters that select containers instead of a container argument.

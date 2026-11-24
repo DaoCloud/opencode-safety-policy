@@ -93,6 +93,7 @@ describe("shell", () => {
     "rm -rf ~/.config/other",
     "cd $X && touch a",
     "ssh h touch .opencode/x",
+    `python3 -c 'import os; os.system("touch .opencode/a")'`,
   ])("%s is not self-protection", (command) => {
     expect(run(command).ruleId).not.toBe("self-protect")
   })
