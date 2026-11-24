@@ -24,6 +24,7 @@
 |---|---|---|
 | 单元测试 | `bun test` | 全部通过（P0-1 尚无测试，跳过） |
 | 类型检查 | `bunx tsc --noEmit` | 0 error |
+| E2E | `bun run test:e2e` | 改动涉及 hook、判定结果、RPC 或 TUI 时全部通过（需要本机 `opencode`，见第 4 节） |
 | 零运行时依赖 | `jq '.dependencies // {}' package.json` | 输出 `{}` |
 | 工作区干净 | `git status --short` | 只有本 Step 的文件，无调试产物 |
 
@@ -49,9 +50,9 @@
 | 项 | 版本 / 路径 |
 |---|---|
 | Bun | 1.3.14 |
-| OpenCode | v2.3.2（`/usr/local/nodejs/bin/opencode`） |
-| `@opencode/plugin` | devDependency 锁定 `2.3.2`（与本机 OpenCode 一致，只用于类型检查）；peerDependency `^2.3.0` |
-| 其他 devDependencies | `@tsconfig/bun`、`@types/bun`、`typescript`（参照官方 `packages/plugins/figma`） |
+| OpenCode | v2.4.1（`/usr/local/nodejs/bin/opencode`）。P0 在 v2.3.2 上开发验收，升级后 E2E 套件全部通过 |
+| `@opencode/plugin` | devDependency 锁定 `2.3.2`（只用于类型检查）；peerDependency `^2.3.0` |
+| 其他 devDependencies | `@tsconfig/bun`、`@types/bun`、`typescript`（参照官方 `packages/plugins/figma`）；`@xterm/headless`（E2E 中渲染 TUI 屏幕） |
 | 参考源码（只读） | `/ai-workspace/weizhoublue/git/opencode`（HEAD `22377659`） |
 | API 用法参考 | 插件结构：`packages/plugins/figma/`；`Rpc.define` 写法：`packages/core/test/plugin/module.test.ts`（该用例用的是 Effect API，本插件改用 Promise API 和 JSON Schema） |
 
@@ -63,10 +64,18 @@
 - 驱动方式：
   - `opencode run --standalone '<消息>'`：非交互，审批自动拒绝，适合验证 deny 与“弹出审批”。
   - `opencode serve --hostname 127.0.0.1 --port <p>` + HTTP API（Basic 认证，用户名 `opencode`，密码见启动日志）：`GET /api/session/:id/permission` 查询审批，`POST /api/session/:id/permission/:requestID/reply` 回复 `once`/`always`/`reject`，`POST /api/rpc/:rpcID/:method` 调用插件 RPC，请求体为 `{ "input": ... }`。插件按 Location 懒加载，对新目录的第一次请求可能返回 `rpc.unavailable`，稍后重试即可。
-  - TUI：`opencode --standalone <dir>`，用 pty + `pyte` 驱动或手测。
+  - TUI：`opencode --standalone <dir>`，用 `Bun.Terminal` 提供 pty、`@xterm/headless` 渲染屏幕后断言文本。
 - 替身命令：拦截失效时命令会真实执行，所以 E2E 前把 `rm`、`kubectl`、`docker`、`ssh`、`nv` 等替身脚本放到 `PATH` 最前，替身只打印参数。规则按命令名判定，替身不影响结果。
 - 不修改 `/etc/opencode` 和个人 `~/.config/opencode`（本机为共享环境）。系统级部署放到 R-2，在容器或 VM 中验证。
 - Code Mode 嵌套调用 shell 需要 `OPENCODE_FLAGS=full_codemode`。该 flag 只能显式开启，也可以在配置里写 `experimental.full_codemode: true`。
+
+**自动化 E2E 套件**：`test/e2e/` 按上述方式搭建环境，用 `bun run test:e2e`（即 `OCSP_E2E=1 bun test test/e2e`）运行，默认的 `bun test` 跳过这些用例。
+
+- `harness.ts`：每个测试文件在 `/tmp/ocsp-e2e-*` 下建立独立的 HOME、XDG 目录、两个项目目录和替身命令，在测试进程内起 mock LLM，启动 `opencode serve --port 0` 并通过 HTTP API 发消息、回复审批、调用 RPC。环境变量中继承来的 `OPENCODE_*` 全部去掉，并设置 `OPENCODE_DISABLE_AUTOUPDATE=1`。结束时停进程、删临时目录。
+- `server.test.ts`：P0-E2E 中 shell 拦截、审批、SSH、自保护、模式切换与 TTL 回落、Code Mode、LOCK、`session_inbox` 与 LLM 回合数。
+- `analyzer.test.ts`：P1-1、P1-2 的判定在真实 `opencode serve` 上的结果，脚本输入用项目中的真实文件。
+- `tui.test.ts`：`/safety` 补全、命令面板、状态与切换 Toast、强制审批的原因 Toast、LOCK 下拒绝切换。
+- 新增危险命令用例时，先确认命令名在替身列表中，不要在命令里写 `/bin/rm` 这类绝对路径。本机存在 `/data`。
 
 ## 5. 阶段总览
 
@@ -270,7 +279,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 
 ### P0-E2E
 
-在隔离环境中用 mock LLM 逐项验证（驱动方式见第 4 节，TUI 项用 pty 驱动或手测），失败项先修复（`fix:` commit）再重测。
+在隔离环境中用 mock LLM 逐项验证（驱动方式见第 4 节），失败项先修复（`fix:` commit）再重测。除 Desktop/Web App 一项外，各项已由 `test/e2e/server.test.ts` 和 `test/e2e/tui.test.ts` 自动化。
 
 - [x] 本机 `rm -rf /data`、`shell({ workdir: "/", command: "rm -rf etc" })`、`kubectl delete`、`docker stop`、`opencode_worktree_remove(force: true)` 被拦截
 - [x] `/tmp` 下的常规 `rm` 只弹一次内置审批，直调和 `full_codemode` 两种场景都要测
@@ -340,6 +349,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 
 ### P1-E2E
 
+- [x] P1-1、P1-2 的判定在真实 `opencode serve` 上与单元测试一致（`test/e2e/analyzer.test.ts`）
 - [ ] `bun test` 全绿，覆盖嵌套引号、heredoc、管道、Redfish/UFM 写请求和脚本预扫
 - [ ] `curl -X POST https://<bmc>/redfish/v1/.../VirtualMedia.InsertMedia` 被拦截
 - [ ] Code Mode `fetch` 写受保护端点被拦截，包括 307/308 重定向
@@ -419,9 +429,9 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 | 单元测试 | tokenizer、unwrapper、path-util、http-extractor、script-scanner、模式矩阵 | `bun test`，纯函数输入输出 |
 | 规则回归 | 全部 `rules/*.json` 的 `examples` | `rules-examples.test.ts` 自动遍历，新增规则不用写测试代码 |
 | 插件集成 | hook 编排、标记匹配、setup/cleanup、RPC | `fake-context.ts`。只验证插件自身逻辑，不能代替真实 OpenCode 行为 |
-| 真实行为 | OpenCode 的审批、Code Mode、TUI、storage | Spike + 各阶段 E2E 清单 |
+| 真实行为 | OpenCode 的审批、Code Mode、TUI、storage | Spike + 各阶段 E2E 清单，可自动化的项放进 `test/e2e/`（`bun run test:e2e`） |
 
-- 每次升级 OpenCode 版本：重跑 Spike S3–S9 和 P0-E2E，通过后再放宽 `peerDependencies`。
+- 每次升级 OpenCode 版本：重跑 `bun run test:e2e` 和 Spike S3–S9，通过后再放宽 `peerDependencies`。
 - 不写只验证常量、默认值或类型的测试。
 
 ## 12. 待决事项
