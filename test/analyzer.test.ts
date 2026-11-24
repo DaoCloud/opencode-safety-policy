@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test"
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { analyze, readScriptFile, type AnalyzeInput } from "../src/analyzer"
@@ -14,6 +14,16 @@ const HOME = "/ocsp-analyzer/home"
 const BUILTIN = loadBuiltinRules()
 const RULES = buildRuleSet({ rules: BUILTIN })
 const READ_ONLY = loadReadOnlyList()
+
+let root: string
+
+beforeAll(() => {
+  root = mkdtempSync(path.join(os.tmpdir(), "ocsp-analyzer-"))
+})
+
+afterAll(() => {
+  rmSync(root, { recursive: true, force: true })
+})
 
 const run = (command: string, options: Partial<AnalyzeInput> = {}) =>
   analyze({ command, locationDirectory: CWD, mode: "strict", rules: RULES, readOnly: READ_ONLY, home: HOME, ...options })
@@ -326,7 +336,7 @@ describe("script input", () => {
   })
 
   test("readScriptFile reads only small regular files", () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "ocsp-script-"))
+    const dir = mkdtempSync(path.join(root, "script-"))
     const file = path.join(dir, "x.sh")
     writeFileSync(file, "rm -rf /etc\n")
     expect(readScriptFile(file)).toBe("rm -rf /etc\n")
@@ -342,7 +352,7 @@ describe("script input", () => {
   })
 
   test("the default reader is used by analyze", () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "ocsp-script-"))
+    const dir = mkdtempSync(path.join(root, "script-"))
     writeFileSync(path.join(dir, "x.sh"), "rm -rf /etc\n")
     expect(verdict(`ssh node1 'bash -s' < ${dir}/x.sh`)).toEqual(["deny", "rm-system-path"])
     expect(verdict("bash < x.sh", { locationDirectory: dir })).toEqual(["deny", "rm-system-path"])
@@ -488,7 +498,7 @@ describe("result", () => {
 
 describe("loadReadOnlyList", () => {
   test("rejects a file without non-empty string commands", () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "ocsp-readonly-"))
+    const dir = mkdtempSync(path.join(root, "readonly-"))
     const file = path.join(dir, "ssh-readonly.json")
     writeFileSync(file, JSON.stringify({ commands: ["ls", " "] }))
     expect(() => loadReadOnlyList([], file)).toThrow(RuleError)
