@@ -423,6 +423,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - 设计：8、9 阶段 4
 - 内容：从 GitHub 在线安装、Release 发布、`/etc/opencode/safety-policy/` 托管与 `policies` 配置、离线安装、规则扩展方法、1.2 中的安全边界说明。
 - commit：`docs: add installation and usage guide`
+- [x] 按 README 的命令在 `/tmp` 中走了一遍离线安装：`sha256sum -c`、`tar --no-same-owner --strip-components=1`、`cli.ts test`
 
 ### R-2 系统级部署验证（容器或 VM，不在共享机上做）
 
@@ -500,6 +501,6 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [x] P2-4 审计日志
 - [x] P2-5 可选服务端 /safety
 - [ ] P2-E2E
-- [ ] R-1 README
+- [x] R-1 README
 - [x] R-2 系统级部署验证
 - [x] R-3 打包
