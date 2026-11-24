@@ -135,6 +135,9 @@
   │     • 按 ; / && / || / | / & / $(...) / `...` 拆分为命令段，
   │       同时保留管道上游、输入重定向（<、<<、<<<）与命令替换信息
   │     • 命令名归一化：剥离外层引号、前导反斜杠（\rm）与路径前缀（path.basename("/usr/bin/rm") -> "rm"）
+  │     • 参数中未加引号的 brace 展开按 bash 语义展开（{a,b}、/{etc,usr}、{1..10..2}、{01..10}、{a..z}，
+  │       含嵌套）：整条命令行累计最多 1024 个词、嵌套最多 16 层，超出即按 opaque fail-closed；
+  │       for/select 循环头的词表不展开
   │     • 关键工具维护明确的带值全局参数表（ssh、kubectl、docker、curl），
   │       避免 --kubeconfig /path、--as admin、-o ProxyCommand=... 干扰子命令提取
   │     • 对 rm/shred/chmod/chown/dd/mv/find -delete 等路径敏感命令，将相对路径参数（含 . / .. / *）
@@ -151,10 +154,12 @@
   │     • 动态命令名与函数封装（CMD=rm; $CMD ...、f() { ... }; f ...）-> opaque。命令名中的 glob 与
   │       brace 展开（/bin/r[m]、{rm,-rf,/}）同样视为动态；仅目录部分动态而 basename 为字面量的
   │       （"$(go env GOPATH)/bin/sudo"）按该 basename 判定
-  │     • 管道向远程解释器喂脚本（... | ssh host sh/bash/python）
+  │     • 管道或进程替换向解释器喂脚本：curl ... | bash、base64 -d | sh、cat x | ssh host sh、
+  │       bash <(curl ...)、source <(...)、... | python3 -、kubectl exec -i pod -- sh 读管道等，
+  │       脚本内容来自运行期数据 -> opaque（piped-script）
   │     • Heredoc / Here-string 喂 SSH（ssh host bash <<'EOF' ... EOF）
   │     • 本地文件重定向喂 SSH（ssh host bash < script.sh）
-  │     • 编码/间接执行（base64 -d | sh、eval、$'\x72\x6d'、xargs rm）
+  │     • 编码/间接执行（eval、$'\x72\x6d'、xargs rm）
   │     • 同命令先写后执行 / 本地脚本 TOCTOU（cat > /tmp/run.sh <<EOF ... && bash /tmp/run.sh）：
   │       若 execute.before 阶段目标脚本尚不存在（ENOENT）或同命令内先写入再执行，
   │       除扫描内联写入正文外，一律按 opaque 走 fail-closed，绝不静默 allow
@@ -162,12 +167,17 @@
   ├─► Stage 3: Wrapper 递归拆壳（Recursive Unwrapper，最大深度 8）
   │     逐层剥离外层包装器，并记录执行上下文（isRemote、targetHost、wrapperChain）：
   │     • 权限/环境包装：sudo、su -c、runuser、doas、env、timeout、nohup、nice、stdbuf、ionice、setsid、
-  │       time、command、builtin、exec、eval
+  │       time、command、builtin、exec、eval、flock、watch、chroot（内层按根目录 / 解析相对路径，保守判定）
   │     • Shell 嵌套：sh -c、bash -c、zsh -c、dash -c；无 -c 时以 stdin（heredoc / here-string）为脚本
   │       （bash <<EOF、ssh host <<EOF、sudo -s <<EOF、su root <<EOF）
-  │     • 远程执行：ssh、sshpass、pdsh、pssh、clush、ansible ... -m shell/command/raw
-  │     • 容器/集群进入：kubectl exec --、docker exec、nerdctl exec、crictl exec、podman exec
-  │     • 批处理：xargs、find ... -exec/-delete
+  │     • 远程执行：ssh、sshpass；批量远程 pdsh、pssh/parallel-ssh、clush、ansible ... -m shell/command/raw
+  │       （含 ansible.builtin./ansible.legacy. 前缀）的远端命令按远程原子命令判定，clush -c/--copy 等拷贝模式不拆
+  │     • 容器/集群进入：kubectl exec --、docker/nerdctl/podman/crictl exec（含 podman exec -l）
+  │     • 批处理：xargs；find ... -exec/-execdir/-ok/-okdir（{} 以占位路径代入，*dir 形态目录未知，
+  │       find 本身仍保留以匹配 find -delete 规则）；GNU parallel（::: 取值逐个代入，-S 远程执行，
+  │       无命令时取值本身作为脚本）
+  │     • 解释器：python/perl/ruby/node 从管道或 - 读程序、或以进程替换为脚本时 -> opaque；
+  │       -c/-e 内联代码与本地脚本由 Stage 3.5 预扫
   │
   ├─► Stage 3.5: HTTP/REST 写请求提取 & 轻量脚本预扫（HttpCommandExtractor & ScriptScanner）
   │     • 对 curl / wget / http（HTTPie）提取 HTTP Method、目标 URL 与请求体片段：

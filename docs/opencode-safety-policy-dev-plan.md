@@ -292,7 +292,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 
 ### P1-1 Opaque / 混淆检测与其余 wrapper
 
-- 设计：3.1 Stage 2、Stage 3
+- 设计：3.1 Stage 1、Stage 2、Stage 3
 - 产出：扩展 tokenizer、unwrapper、analyzer 及其测试
 - 要点：
   - 检测动态命令名、函数封装、`eval`、`base64 -d | sh`、`$'\x..'`。
