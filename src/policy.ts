@@ -28,6 +28,8 @@ export interface Policy {
   readonly home: string
   /** `options.auditLogPath`, unless the options are invalid. */
   readonly auditLogPath?: string
+  /** `options.enableServerSlashCommand`, unless the options are invalid. */
+  readonly serverCommand: boolean
   /** Current options and rules. Throws when they are invalid. */
   load(): Loaded
 }
@@ -61,6 +63,7 @@ export function createPolicy(input: PolicyInput): Policy {
     mode,
     home,
     auditLogPath: ready?.options.auditLogPath,
+    serverCommand: ready?.options.enableServerSlashCommand === true,
     load() {
       if (!ready) throw failure
       return { options: ready.options, rules: ready.provider.get(), readOnly: ready.readOnly, protect: ready.protect }

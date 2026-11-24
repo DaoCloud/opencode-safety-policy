@@ -5,6 +5,8 @@ import type { Plugin, Rpc } from "@opencode/plugin"
 type Callback = (event: any) => Promise<void> | void
 type AssertInput = Parameters<Plugin.Context["permission"]["assert"]>[0]
 type Handler = (input: unknown, context: unknown) => Promise<unknown>
+type Editor = Parameters<Parameters<Plugin.Context["command"]["transform"]>[0]>[0]
+type Command = Parameters<Editor["add"]>[0]
 
 class ReturnedError {
   constructor(
@@ -19,8 +21,10 @@ export function fakeContext(init: { directory?: string; options?: Record<string,
   const data = new Map<string, unknown>()
   const asserts: AssertInput[] = []
   const rpcs: Array<{ definition: Rpc.PortableDefinition; handlers: Record<string, Handler> }> = []
-  /** Set to make `permission.assert` reject with it. */
-  const control: { assertError?: unknown } = {}
+  const commands: Command[] = []
+  const synthetics: unknown[] = []
+  /** Set `assertError` to make `permission.assert` reject with it, and `time` for the Session `get` returns. */
+  const control: { assertError?: unknown; time?: { busy?: number; idle?: number } } = {}
 
   const hook = (domain: string) => async (name: string, callback: Callback) => {
     const key = `${domain}.${name}`
@@ -58,6 +62,17 @@ export function fakeContext(init: { directory?: string; options?: Record<string,
         return { dispose: async () => {}, events: { emit: async () => {} } }
       },
     },
+    command: {
+      transform: async (callback: (editor: Editor) => void) => {
+        callback({ add: (definition) => void commands.push(definition) })
+        return { dispose: async () => {} }
+      },
+    },
+    session: {
+      hook: hook("session"),
+      get: async ({ sessionID }: { sessionID: string }) => ({ id: sessionID, time: control.time ?? {} }),
+      synthetic: async (input: unknown) => void synthetics.push(input),
+    },
   } as unknown as Plugin.Context
 
   /** Runs the callbacks registered for `<domain>.<name>` in order, like OpenCode. */
@@ -80,5 +95,12 @@ export function fakeContext(init: { directory?: string; options?: Record<string,
     throw { type: result.type, message: result.message, data: result.data }
   }
 
-  return { ctx, hooks, data, asserts, control, rpcs, fire, call }
+  /** Runs the latest command named `name` like `POST /api/session/:sessionID/command`. */
+  async function command(name: string, text: string, sessionID = "ses_1") {
+    const definition = commands.findLast((item) => item.name === name)
+    if (!definition) throw new Error(`unknown command ${name}`)
+    await definition.execute({ sessionID, prompt: { text }, delivery: "steer" } as Parameters<Command["execute"]>[0])
+  }
+
+  return { ctx, hooks, data, asserts, control, rpcs, commands, synthetics, fire, call, command }
 }

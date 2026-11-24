@@ -64,6 +64,8 @@ export interface LlmRequest {
   tools: string[]
   user: string
   results: string[]
+  /** The text of every message. */
+  texts: string[]
 }
 
 type Message = { role: string; content?: unknown; tool_calls?: unknown[] }
@@ -117,7 +119,7 @@ function startMock() {
       const done = after.filter((m) => m.role === "assistant" && m.tool_calls?.length).length
       const results = after.filter((m) => m.role === "tool").map((m) => text(m.content))
       const tools = (body.tools ?? []).map((t) => t.function?.name)
-      requests.push({ tools, user, results })
+      requests.push({ tools, user, results, texts: messages.map((m) => text(m.content)) })
       const stream = body.stream !== false
       if (!tools.length) return respond(stream, { text: "title" })
       const calls = directives(user)

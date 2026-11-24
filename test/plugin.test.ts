@@ -5,10 +5,13 @@ import path from "node:path"
 import plugin from "../index"
 import definition from "../rpc"
 import { createAudit, type Audit } from "../src/audit"
+import { registerCommand, SOURCE } from "../src/command"
 import { registerPermissionHook } from "../src/hooks/permission"
+import { registerSessionFilter } from "../src/hooks/session-filter"
 import { createMarkers, MARKER_TTL_MS, registerToolHooks } from "../src/hooks/tool"
 import { createPolicy, type Policy } from "../src/policy"
 import type { CompiledRule } from "../src/rules/matcher"
+import { formatTest, USAGE } from "../src/report"
 import { PLUGIN_DIR, protectedPaths } from "../src/rules/self-protect"
 import { createRpcHandlers } from "../src/rpc-handlers"
 import { LOCK_ENV, MODE_ENV } from "../src/state"
@@ -222,6 +225,7 @@ describe("fail closed", () => {
     const bad = { rule: { id: "bad", pattern: "x" }, regex: { test: () => { throw new Error("boom") } } } as unknown as CompiledRule
     const policy: Policy = {
       home: "/home/u",
+      serverCommand: false,
       mode: { resolve: async () => ({ mode: "strict", source: "default", locked: false }), setMode: async () => { throw new Error("unused") } },
       load: () => ({
         options: {},
@@ -495,6 +499,106 @@ describe("entry", () => {
     const s = await load({ mode: "bogus" })
     await s.rpc("setMode", { mode: "strict" })
     await expect(s.fire("tool.execute.before", call("shell", { command: "ls" }))).rejects.toThrow("[safety-policy:config-error]")
+  })
+  test("registers the server command and its session hooks only when enabled", async () => {
+    for (const options of [{}, { enableServerSlashCommand: false }, { enableServerSlashCommand: true, mode: "bogus" }]) {
+      const s = await load(options)
+      expect(s.commands).toEqual([])
+      expect([...s.hooks.keys()].filter((key) => key.startsWith("session."))).toEqual([])
+    }
+    const s = await load({ enableServerSlashCommand: true })
+    expect(s.commands.map((item) => item.name)).toEqual(["safety"])
+    const hooks = [...s.hooks.keys()].filter((key) => key.startsWith("session.")).sort()
+    expect(hooks).toEqual(["session.compaction", "session.context", "session.generate", "session.title"])
+    await s.command("safety", "status")
+    expect(s.synthetics).toHaveLength(1)
+  })
+})
+
+describe("server command", () => {
+  async function setupCommand(env: Record<string, string> = {}, options: Record<string, unknown> = {}) {
+    const fake = fakeContext({ directory: root })
+    // The status text counts the TTL down from the real time.
+    const clock = { t: Date.now() }
+    const policy = createPolicy({ options, storage: fake.ctx.storage, env, home: "/home/u", now: () => clock.t })
+    const stats = createStats(fake.ctx.storage, () => clock.t)
+    const audit = tracked(createAudit(policy.auditLogPath, fake.ctx.location.directory, () => clock.t))
+    const handlers = createRpcHandlers({ policy, stats, audit, directory: fake.ctx.location.directory })
+    await registerSessionFilter(fake.ctx)
+    await registerCommand(fake.ctx, handlers)
+    const safety = (text: string) => fake.command("safety", text)
+    return { ...fake, clock, policy, handlers, audit, safety }
+  }
+
+  const posted = (text: string) => ({
+    sessionID: "ses_1",
+    text,
+    description: text,
+    metadata: { source: "safety-policy" },
+    delivery: "steer",
+    resume: false,
+  })
+
+  test("posts the status as a synthetic that does not wake the session", async () => {
+    const s = await setupCommand()
+    await s.safety("")
+    await s.safety("status")
+    const text = "当前模式：strict（source: default）；最近 24 小时无拦截"
+    expect(s.synthetics).toEqual([posted(text), posted(text)])
+  })
+
+  test("switches the mode like the rpc and audits it", async () => {
+    const file = path.join(root, "audit-command.jsonl")
+    const s = await setupCommand({}, { auditLogPath: file })
+    await s.safety("relaxed --ttl 30m")
+    expect(await s.policy.mode.resolve()).toMatchObject({ mode: "relaxed", expiresAt: s.clock.t + 1_800_000 })
+    expect(s.synthetics).toEqual([posted("当前模式：relaxed（source: runtime，30 分钟后回落）")])
+    await s.audit.settled()
+    expect(auditLines(file)).toMatchObject([{ event: "mode", mode: "relaxed", ttlMs: 1_800_000 }])
+  })
+
+  test("test posts the dry run", async () => {
+    const s = await setupCommand()
+    await s.safety(`test "rm -rf /etc"`)
+    const result = await s.handlers.test({ command: "rm -rf /etc" })
+    expect(s.synthetics).toEqual([posted(formatTest("rm -rf /etc", result))])
+    expect((s.synthetics[0] as { text: string }).text).toContain("结果：deny [rm-system-path]")
+  })
+
+  test("fails with the usage or the lock and posts nothing", async () => {
+    const s = await setupCommand()
+    await expect(s.safety("bogus")).rejects.toThrow(USAGE)
+    await expect(s.safety("test")).rejects.toThrow(USAGE)
+    const locked = await setupCommand({ [LOCK_ENV]: "strict" })
+    await expect(locked.safety("off")).rejects.toThrow(LOCK_ENV)
+    expect(await locked.policy.mode.resolve()).toMatchObject({ mode: "strict", locked: true })
+    expect([...s.synthetics, ...locked.synthetics]).toEqual([])
+  })
+
+  test("returns the result as the error while the session runs", async () => {
+    const s = await setupCommand()
+    for (const time of [{ busy: 5 }, { busy: 5, idle: 4 }]) {
+      s.control.time = time
+      await expect(s.safety("off")).rejects.toThrow("当前模式：off（source: runtime）")
+    }
+    expect(s.synthetics).toEqual([])
+    expect(await s.policy.mode.resolve()).toMatchObject({ mode: "off" })
+    s.control.time = { busy: 5, idle: 5 }
+    await s.safety("strict")
+    expect(s.synthetics).toEqual([posted("当前模式：strict（source: runtime）")])
+  })
+
+  test("its results are dropped from every model request", async () => {
+    const s = await setupCommand()
+    for (const name of ["context", "compaction", "generate", "title"]) {
+      const user = { role: "user", content: "hi" }
+      const goal = { role: "user", content: "goal", metadata: { source: "goal" } }
+      const messages = [user, { role: "user", content: "safety", metadata: { source: SOURCE } }, goal]
+      const event = { sessionID: "ses_1", messages }
+      await s.fire(`session.${name}`, event)
+      expect(event.messages).toBe(messages)
+      expect(messages).toEqual([user, goal])
+    }
   })
 })
 

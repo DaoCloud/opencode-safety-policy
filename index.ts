@@ -6,7 +6,9 @@
 import { Plugin } from "@opencode/plugin"
 import definition from "./rpc"
 import { createAudit } from "./src/audit"
+import { registerCommand } from "./src/command"
 import { registerPermissionHook } from "./src/hooks/permission"
+import { registerSessionFilter } from "./src/hooks/session-filter"
 import { createMarkers, registerToolHooks } from "./src/hooks/tool"
 import { createPolicy } from "./src/policy"
 import { createRpcHandlers } from "./src/rpc-handlers"
@@ -21,6 +23,10 @@ export default Plugin.define({
     const audit = createAudit(policy.auditLogPath, ctx.location.directory)
     await registerToolHooks(ctx, { policy, markers, stats, audit })
     await registerPermissionHook(ctx, { policy, markers, stats, audit })
-    await ctx.rpc.register(definition, createRpcHandlers({ policy, stats, audit, directory: ctx.location.directory }))
+    const handlers = createRpcHandlers({ policy, stats, audit, directory: ctx.location.directory })
+    await ctx.rpc.register(definition, handlers)
+    if (!policy.serverCommand) return
+    await registerSessionFilter(ctx)
+    await registerCommand(ctx, handlers)
   },
 })

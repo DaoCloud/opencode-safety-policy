@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import os from "node:os"
 import path from "node:path"
 import {
+  directive,
   E2E_ENABLED,
   expectAllowed,
   expectAsked,
@@ -37,7 +38,7 @@ const REWRITER = `export default {
 beforeAll(async () => {
   if (!E2E_ENABLED) return
   auditDir = mkdtempSync(path.join(os.tmpdir(), "ocsp-e2e-audit-"))
-  h = new Harness({ auditLogPath: auditLog() }, [REWRITER])
+  h = new Harness({ auditLogPath: auditLog(), enableServerSlashCommand: true }, [REWRITER])
   await h.start()
 })
 
@@ -303,6 +304,73 @@ describe.skipIf(!E2E_ENABLED)("code mode", () => {
     const call = await h.call("execute", { code })
     expect(call.result).toContain("[safety-policy:worktree-remove-force]")
     expect(safetyPermissions(call.permissions)).toEqual([])
+  })
+})
+
+describe.skipIf(!E2E_ENABLED)("server command", () => {
+  const safety = (sessionID: string, text: string) =>
+    h.api("POST", `/api/session/${sessionID}/command`, { name: "safety", text })
+  const inbox = async (sessionID: string) => (await h.api("GET", `/api/session/${sessionID}/inbox`)).data as any[]
+
+  test("posts results for the next prompt without a model turn, and the model never sees them", async () => {
+    const sessionID = await h.session()
+    h.sessions.set(sessionID, h.project)
+    const before = h.requests.length
+    await safety(sessionID, "relaxed --ttl 1m")
+    expect(await status()).toMatchObject({ mode: "relaxed", source: "runtime" })
+    await safety(sessionID, "strict")
+    await safety(sessionID, "status")
+    await safety(sessionID, "test 'rm -rf /data'")
+    const posted = await inbox(sessionID)
+    const metadata = { source: "safety-policy" }
+    expect(posted.map((item) => [item.type, item.delivery, item.payload.metadata])).toEqual(
+      Array(4).fill(["synthetic", "steer", metadata]),
+    )
+    const texts = posted.map((item) => item.payload.description)
+    expect(texts[0]).toStartWith("当前模式：relaxed（source: runtime，1 分钟后回落）")
+    expect(texts[1]).toStartWith("当前模式：strict（source: runtime）")
+    expect(texts[2]).toStartWith("当前模式：strict")
+    expect(texts[3]).toContain("结果：deny [rm-system-path]")
+    expect(posted.map((item) => item.payload.text)).toEqual(texts)
+    await Bun.sleep(1_000)
+    expect(h.requests.length).toBe(before)
+
+    expectAllowed(await h.shell("echo ocsp-after-command", { sessionID }))
+    expect(await inbox(sessionID)).toEqual([])
+    const seen = h.requests.slice(before)
+    expect(seen.some((request) => request.tools.length > 0)).toBe(true)
+    for (const request of seen) expect(request.texts.join("\n")).not.toMatch(/当前模式|结果：deny/)
+    for (const item of posted) {
+      const message = await h.api("GET", `/api/session/${sessionID}/message/${item.id}`)
+      expect(message.data).toMatchObject({ type: "synthetic", metadata })
+    }
+  })
+
+  test("fails with the usage and posts nothing", async () => {
+    const sessionID = await h.session()
+    await expect(safety(sessionID, "bogus")).rejects.toThrow("用法：/safety")
+    expect(await inbox(sessionID)).toEqual([])
+  })
+
+  test("returns the result as the error while the session runs, without an extra model step", async () => {
+    const sessionID = await h.session()
+    const file = h.write("tmp/command-busy.txt", "x")
+    h.sessions.set(sessionID, h.project)
+    h.expectedTurns += 2
+    const text = `#busy\n${directive("shell", { command: `rm ${file}` })}`
+    await h.api("POST", `/api/session/${sessionID}/prompt`, { text })
+    const route = `/api/session/${sessionID}/permission`
+    let permission: any
+    const deadline = Date.now() + 30_000
+    while (!permission && Date.now() < deadline) {
+      permission = (await h.api("GET", route)).data[0]
+      if (!permission) await Bun.sleep(100)
+    }
+    expect(permission?.message ?? "").toStartWith("[safety-policy:rm-local]")
+    await expect(safety(sessionID, "status")).rejects.toThrow("当前模式：strict")
+    expect(await inbox(sessionID)).toEqual([])
+    await h.api("POST", `${route}/${permission.id}/reply`, { decision: "once" })
+    await h.idle(sessionID)
   })
 })
 
