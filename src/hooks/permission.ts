@@ -8,11 +8,17 @@
  *   marked command. The plugin's own prompts (`metadata.safetyPolicy`) are always asked.
  * - `edit`: writes to a protected path are denied (design 4.2). This also covers Code Mode `Bun.write`, which has no
  *   `execute.before`.
+ * - `webfetch`: a request other than GET / HEAD that hits an HTTP rule (Redfish, UFM, `protectedEndpoints`) is denied
+ *   in every mode but `off` (design 4.3). An `ask` would offer to save `webfetch: *`, and Code Mode checks redirect
+ *   hops only for `deny`. Each hop is evaluated with the method of the first request. The body is not visible, so it
+ *   is unknown. The webfetch tool and image downloads send no method and only GET.
  */
 
 import type { Plugin } from "@opencode/plugin"
+import { request } from "../http-extractor"
 import { resolveCanonicalPath } from "../path-util"
 import { active, type Policy } from "../policy"
+import { decide } from "../rules"
 import { isProtected, selfProtectVerdict } from "../rules/self-protect"
 import { describe, label, type Markers } from "./tool"
 
@@ -42,6 +48,7 @@ async function evaluate(ctx: Pick<Context, "location">, deps: PermissionHookDeps
   if (event.effect === "deny") return
   if (event.action === "shell") return forcePrompt(deps.markers, event)
   if (event.action === "edit") return protectFiles(ctx, deps.policy, event)
+  if (event.action === "webfetch") return protectEndpoints(deps.policy, event)
 }
 
 function forcePrompt(markers: Markers, event: Evaluation) {
@@ -56,18 +63,33 @@ function forcePrompt(markers: Markers, event: Evaluation) {
 }
 
 async function protectFiles(ctx: Pick<Context, "location">, policy: Policy, event: Evaluation) {
-  let state
-  try {
-    state = await active(policy)
-  } catch (error) {
-    return set(event, "deny", label("config-error", describe(error)))
-  }
+  const state = await enforced(policy, event)
   if (!state) return
   for (const resource of event.resources) {
     const target = resolveCanonicalPath(resource, ctx.location.directory, policy.home)
     if (!isProtected(target, state.loaded.protect)) continue
     const verdict = selfProtectVerdict(target)
     return set(event, "deny", label(verdict.ruleId, verdict.reason))
+  }
+}
+
+async function protectEndpoints(policy: Policy, event: Evaluation) {
+  const method = event.metadata?.method
+  const known = typeof method === "string" ? method.toUpperCase() : "GET"
+  if (known === "GET" || known === "HEAD") return
+  const state = await enforced(policy, event)
+  if (!state || state.mode === "off") return
+  const http = event.resources.map((url) => request(known, url, undefined))
+  const verdict = decide({ argv: [], isRemote: false, http }, state.loaded.rules, "strict")
+  if (verdict.decision !== "allow") set(event, "deny", label(verdict.ruleId!, verdict.reason!))
+}
+
+/** The policy the hooks enforce now; a config error denies the event and returns `undefined`. */
+async function enforced(policy: Policy, event: Evaluation) {
+  try {
+    return await active(policy)
+  } catch (error) {
+    set(event, "deny", label("config-error", describe(error)))
   }
 }
 

@@ -260,6 +260,59 @@ describe("evaluate", () => {
     const s = await setup({ directory: path.join(root, "proj"), home })
     expect((await s.evaluate({ action: "edit", resources: ["cfg/x.json"] })).effect).toBe("deny")
   })
+
+  describe("webfetch", () => {
+    const options = { protectedEndpoints: { bmcCidrs: ["10.0.0.0/24"] } }
+    const RESET = "https://bmc1/redfish/v1/Systems/1/Actions/ComputerSystem.Reset"
+    const fetch = (url: string, method?: string, extra: Record<string, unknown> = {}) => ({
+      action: "webfetch",
+      resources: [url],
+      metadata: { ...(method && { method }), url, ...extra },
+    })
+
+    test.each<[Mode, string, string, string]>([
+      ["strict", RESET, "POST", "redfish-power-reset"],
+      ["relaxed", RESET, "POST", "redfish-power-reset"],
+      ["strict", "https://bmc1/redfish/v1/Systems/1", "PATCH", "redfish-boot-override"],
+      ["strict", "http://10.0.0.5/api", "DELETE", "protected-endpoint-write"],
+      ["relaxed", "http://10.0.0.5/api", "PROPPATCH", "protected-endpoint-write"],
+      ["relaxed", "https://ufm/ufmRestV2/actions", "post", "ufm-rest-write"],
+    ])("%s denies %s %s", async (mode, url, method, ruleId) => {
+      const s = await setup({ options, mode })
+      const event = await s.evaluate({ ...fetch(url, method), effect: "ask" })
+      expect(event.effect).toBe("deny")
+      expect(event.message).toStartWith(`[safety-policy:${ruleId}] `)
+    })
+
+    test("denies a redirect hop to a protected endpoint", async () => {
+      const s = await setup({ options })
+      const hop = fetch("http://10.0.0.5/x", "POST", { redirectedFrom: "https://example.com/r" })
+      expect((await s.evaluate(hop)).effect).toBe("deny")
+    })
+
+    test("leaves reads, other hosts, off mode and denied requests alone", async () => {
+      const s = await setup({ options })
+      const requests = [
+        fetch(RESET),
+        fetch(RESET, "HEAD"),
+        { action: "webfetch", resources: [RESET], metadata: { url: RESET, format: "markdown" } },
+        fetch("https://example.com/x", "POST"),
+        fetch("http://10.0.1.5/x", "PUT"),
+      ]
+      for (const request of requests) expect((await s.evaluate({ ...request, effect: "ask" })).effect).toBe("ask")
+      const off = await setup({ options, mode: "off" })
+      expect((await off.evaluate(fetch(RESET, "POST"))).effect).toBe("allow")
+      const denied = await s.evaluate({ ...fetch("https://example.com/x"), effect: "deny" })
+      expect(denied.message).toBeUndefined()
+    })
+
+    test("a broken config denies a write", async () => {
+      const s = await setup({ options: { mode: "bogus" } })
+      const event = await s.evaluate(fetch("https://example.com/x", "POST"))
+      expect(event.message).toStartWith("[safety-policy:config-error]")
+      expect((await s.evaluate(fetch("https://example.com/x"))).effect).toBe("allow")
+    })
+  })
 })
 
 describe("self-protection", () => {

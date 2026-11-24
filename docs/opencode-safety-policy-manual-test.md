@@ -72,7 +72,13 @@ TTL 单位为 `s`、`m`、`h`。到期后自动回落到切换前的模式。
 
 ## 5. 可选：Code Mode
 
-用 `OPENCODE_FLAGS=full_codemode opencode` 启动，让模型用 `execute` 工具在代码中调用 `tools.shell` 执行第 3 节第 2 项，并用 `try/catch` 包住。预期：结果中出现 `[safety-policy:container-destroy]`，命令没有执行。
+用 `OPENCODE_FLAGS=full_codemode opencode` 启动，让模型用 `execute` 工具执行下列代码，并用 `try/catch` 包住：
+
+| # | 代码 | 预期 |
+|---|---|---|
+| 1 | `await tools.shell({ command: "docker stop ocsp-not-exist" })` | 结果中出现 `[safety-policy:container-destroy]`，命令没有执行 |
+| 2 | `await fetch("http://127.0.0.2:9/x", { method: "POST" })` | 结果中出现 `[safety-policy:protected-endpoint-write]`，不弹审批；relaxed 下同样拒绝 |
+| 3 | `await fetch("http://127.0.0.2:9/redfish/v1/Systems")` | 不被插件拦截，结果为连接被拒的错误（OpenCode 可能先弹 `webfetch` 审批） |
 
 ## 6. 收尾
 

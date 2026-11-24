@@ -1,8 +1,11 @@
-/** P1-1, P1-2, P1-3 and P1-5 analyzer cases through a real `opencode serve`, with real files for the script inputs. */
+/**
+ * P1-1 to P1-5 analyzer cases through a real `opencode serve`, with real files for the script inputs and local HTTP
+ * servers for Code Mode `fetch`.
+ */
 
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import path from "node:path"
-import { E2E_ENABLED, expectAllowed, expectAsked, expectDenied, Harness, STUB_MARK } from "./harness"
+import { E2E_ENABLED, expectAllowed, expectAsked, expectDenied, Harness, safetyPermissions, STUB_MARK } from "./harness"
 
 setDefaultTimeout(180_000)
 
@@ -151,5 +154,75 @@ describe.skipIf(!E2E_ENABLED)("relaxed", () => {
   test("still denies a critical Redfish action", async () => {
     const call = await h.shell("curl -X POST https://bmc1/redfish/v1/Systems/1/Actions/ComputerSystem.Reset")
     expectDenied(call, "redfish-power-reset")
+  })
+})
+
+describe.skipIf(!E2E_ENABLED)("code mode fetch", () => {
+  const hits: string[] = []
+  let open: ReturnType<typeof Bun.serve>
+  let guarded: ReturnType<typeof Bun.serve>
+
+  beforeAll(async () => {
+    // 127.0.0.2 is a protected endpoint; 127.0.0.1 answers /<status> with a redirect to it.
+    guarded = Bun.serve({
+      hostname: "127.0.0.2",
+      port: 0,
+      fetch(req) {
+        hits.push(`${req.method} ${new URL(req.url).pathname}`)
+        return new Response("GUARDED-OK")
+      },
+    })
+    open = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req) {
+        const { pathname } = new URL(req.url)
+        hits.push(`${req.method} open${pathname}`)
+        const location = `http://127.0.0.2:${guarded.port}/x`
+        return new Response(null, { status: Number(pathname.slice(1)), headers: { location } })
+      },
+    })
+    await h.start({ OPENCODE_FLAGS: "full_codemode" })
+  })
+
+  afterAll(() => {
+    open?.stop(true)
+    guarded?.stop(true)
+  })
+
+  async function fetchCall(url: string, method: string) {
+    hits.length = 0
+    const init = method === "GET" ? "{}" : `{ method: "${method}", body: "{}" }`
+    const code = [
+      `try { const r = await fetch("${url}", ${init}); return "STATUS " + r.status + " " + (await r.text()) }`,
+      "catch (e) { return String(e?.message ?? e) }",
+    ].join("\n")
+    return h.call("execute", { code })
+  }
+
+  test.each([307, 308])("denies a write redirected by %i to a protected endpoint", async (status) => {
+    const call = await fetchCall(`http://127.0.0.1:${open.port}/${status}`, "POST")
+    expect(call.result).toContain("[safety-policy:protected-endpoint-write]")
+    expect(hits).toEqual([`POST open/${status}`])
+    expect(safetyPermissions(call.permissions)).toEqual([])
+  })
+
+  test("denies a direct write to a protected endpoint", async () => {
+    const call = await fetchCall(`http://127.0.0.2:${guarded.port}/x`, "PUT")
+    expect(call.result).toContain("[safety-policy:protected-endpoint-write]")
+    expect(hits).toEqual([])
+  })
+
+  test("denies a Redfish action on any host", async () => {
+    const reset = "/redfish/v1/Systems/1/Actions/ComputerSystem.Reset"
+    const call = await fetchCall(`http://127.0.0.1:${open.port}${reset}`, "POST")
+    expect(call.result).toContain("[safety-policy:redfish-power-reset]")
+    expect(hits).toEqual([])
+  })
+
+  test("allows a read from a protected endpoint", async () => {
+    const call = await fetchCall(`http://127.0.0.2:${guarded.port}/redfish/v1/Systems`, "GET")
+    expect(call.result).toContain("STATUS 200 GUARDED-OK")
+    expect(hits).toEqual(["GET /redfish/v1/Systems"])
   })
 })
