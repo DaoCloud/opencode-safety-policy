@@ -2,7 +2,8 @@
  * `execute.before` / `execute.after` hooks (design 2, Hook 1).
  *
  * Every `deny` is thrown here, the only hook that can fail a tool call. A `shell` call that needs approval is only
- * marked, and the `evaluate` hook forces the built-in shell prompt for it, so the user sees one prompt. Other tools
+ * marked, and the `evaluate` hook forces the built-in shell prompt for it, so the user sees one prompt. An allowed
+ * `shell` call is marked too, so `evaluate` knows which commands were checked. Other tools
  * that need approval are prompted here with `permission.assert`, without `save` so `Always` cannot store a rule, and
  * without `source` so the TUI lists the resources. Tool calls are matched as `[tool ID, JSON input]` (design 4.1).
  * In `off` mode only shell self-protection applies (design 4.2). Every `deny` and `ask` is counted in the recent
@@ -33,11 +34,12 @@ export type ShellInput = { command: string; workdir?: string }
 export const MARKER_TTL_MS = 60_000
 const SUMMARY_MAX = 200
 
-/** A `shell` call that must be approved through the built-in prompt. */
+/** A checked `shell` call: allowed, or to be approved through the built-in prompt. */
 export interface Marker {
   sessionID: string
   callID: string
   command: string
+  decision: "allow" | "ask"
   ruleId?: string
   reason?: string
   expiresAt: number
@@ -113,12 +115,13 @@ async function before(ctx: Pick<Context, "permission" | "location">, deps: ToolH
   }
 
   if (verdict.decision === "deny") throw blocked(deps.stats, verdict.ruleId, verdict.reason)
+  if (shell) {
+    const { decision, ruleId, reason } = verdict
+    deps.markers.add({ sessionID: event.sessionID, callID: event.id, command: shell.command, decision, ruleId, reason })
+  }
   if (verdict.decision !== "ask") return
   void deps.stats.record("ask", verdict.ruleId)
-  if (shell) {
-    deps.markers.add({ sessionID: event.sessionID, callID: event.id, command: shell.command, ruleId: verdict.ruleId, reason: verdict.reason })
-    return
-  }
+  if (shell) return
   await ctx.permission.assert({
     sessionID: event.sessionID,
     agent: event.agent,

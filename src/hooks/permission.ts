@@ -5,7 +5,9 @@
  * reply would skip. A `deny` is never changed.
  * - `shell`: a call marked by `execute.before` is asked. A direct call is matched by its call ID. A call nested in Code
  *   Mode has the `execute` call as its source, so it is matched by session and by every resource being part of the
- *   marked command. The plugin's own prompts (`metadata.safetyPolicy`) are always asked.
+ *   marked command. The plugin's own prompts (`metadata.safetyPolicy`) are always asked. A resource that is not part
+ *   of a command `execute.before` checked, such as one another plugin's `shell.hook("create.before")` rewrote or
+ *   added, is analyzed on its own, in the location directory, and denied on a `deny` (design 2).
  * - `edit`: writes to a protected path are denied (design 4.2). This also covers Code Mode `Bun.write`, which has no
  *   `execute.before`.
  * - `read` (the read tool, Code Mode `Bun.file`), `edit` and `grep` (its `metadata.path`): Server credentials and the
@@ -25,7 +27,7 @@ import { decide } from "../rules"
 import { isProtected, isSecret, secretVerdict, selfProtectVerdict } from "../rules/self-protect"
 import { isLocalApi, serverApiRequest, serverApiVerdict } from "../rules/server-api"
 import type { Stats } from "../stats"
-import { describe, label, type Markers } from "./tool"
+import { analyzeShell, describe, label, type Marker, type Markers } from "./tool"
 
 type Context = Plugin.Context
 type Registration = Awaited<ReturnType<Context["permission"]["hook"]>>
@@ -52,22 +54,39 @@ export function registerPermissionHook(ctx: Pick<Context, "permission" | "locati
 
 async function evaluate(ctx: Pick<Context, "location">, deps: PermissionHookDeps, event: Evaluation) {
   if (event.effect === "deny") return
-  if (event.action === "shell") return forcePrompt(deps.markers, event)
+  if (event.action === "shell") return guardShell(ctx, deps, event)
   if (event.action === "edit") return protectFiles(ctx, deps, event)
   if (event.action === "read") return protectSecrets(ctx, deps, event, event.resources)
   if (event.action === "grep") return protectSecrets(ctx, deps, event, [String(event.metadata?.path ?? ".")])
   if (event.action === "webfetch") return protectEndpoints(deps, event)
 }
 
-function forcePrompt(markers: Markers, event: Evaluation) {
+async function guardShell(ctx: Pick<Context, "location">, deps: PermissionHookDeps, event: Evaluation) {
   const own = event.metadata?.safetyPolicy === true ? event.resources[0] : undefined
   if (own !== undefined) return set(event, "ask", own)
-  const marker =
-    (event.source && markers.get(event.sessionID, event.source.id)) ??
-    markers
-      .list(event.sessionID)
-      .find((item) => event.resources.length > 0 && event.resources.every((resource) => item.command.includes(resource)))
+  const exact = event.source && deps.markers.get(event.sessionID, event.source.id)
+  const checked = exact ? [exact] : deps.markers.list(event.sessionID)
+  const unchecked = event.resources.filter((resource) => !checked.some((marker) => marker.command.includes(resource)))
+  if (unchecked.length) await recheck(ctx, deps, event, unchecked)
+  if (event.effect === "deny") return
+  const covers = (marker: Marker) => event.resources.every((resource) => marker.command.includes(resource))
+  const asks = checked.filter((marker) => marker.decision === "ask")
+  const marker = exact ? asks[0] : event.resources.length > 0 ? asks.find(covers) : undefined
   if (marker) set(event, "ask", label(marker.ruleId, marker.reason))
+}
+
+async function recheck(ctx: Pick<Context, "location">, deps: PermissionHookDeps, event: Evaluation, commands: string[]) {
+  const state = await enforced(deps, event)
+  if (!state) return
+  for (const command of commands) {
+    let verdict
+    try {
+      verdict = analyzeShell(deps.policy, state, ctx.location.directory, { command })
+    } catch (error) {
+      return deny(deps.stats, event, "policy-error", describe(error))
+    }
+    if (verdict.decision === "deny") return deny(deps.stats, event, verdict.ruleId, verdict.reason)
+  }
 }
 
 async function protectFiles(ctx: Pick<Context, "location">, deps: PermissionHookDeps, event: Evaluation) {

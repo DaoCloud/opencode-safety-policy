@@ -87,6 +87,7 @@ describe("shell", () => {
       sessionID: "ses_1",
       callID: event.id,
       command: "rm /tmp/x",
+      decision: "ask",
       ruleId: "rm-local",
       expiresAt: s.clock.t + MARKER_TTL_MS,
     })
@@ -106,13 +107,17 @@ describe("shell", () => {
     expect(s.markers.get("ses_1", event.id)).toBeUndefined()
   })
 
-  test("allows safe commands and leaves malformed input to the tool", async () => {
+  test("marks safe commands as allowed and leaves malformed input to the tool", async () => {
     const s = await setup()
-    for (const input of [{ command: "ls -la" }, { command: 1 }, undefined]) {
+    const safe = call("shell", { command: "ls -la" })
+    await s.before(safe)
+    expect(s.markers.get("ses_1", safe.id)).toMatchObject({ command: "ls -la", decision: "allow" })
+    for (const input of [{ command: 1 }, undefined]) {
       const event = call("shell", input)
       await s.before(event)
       expect(s.markers.get("ses_1", event.id)).toBeUndefined()
     }
+    expect(s.asserts).toEqual([])
   })
 
   test("off mode skips the rules", async () => {
@@ -222,6 +227,48 @@ describe("evaluate", () => {
     expect((await s.evaluate({ ...request, effect: "deny" })).effect).toBe("deny")
     await s.after(event)
     expect((await s.evaluate(request)).effect).toBe("allow")
+  })
+
+  test("denies a shell command that execute.before did not check", async () => {
+    const s = await setup()
+    const ls = call("shell", { command: "ls" })
+    const rm = call("shell", { command: "rm /tmp/x" })
+    await s.before(ls)
+    await s.before(rm)
+    const rewritten = [
+      { action: "shell", resources: ["ls", "rm -rf /etc"], source: source(ls.id) },
+      { action: "shell", resources: ["rm /tmp/x", "rm -rf /etc"], source: source(rm.id) },
+      { action: "shell", resources: ["rm -rf /etc"], source: source("call_execute") },
+      { action: "shell", resources: ["rm -rf /etc"] },
+    ]
+    const denied = { effect: "deny", message: expect.stringMatching(/^\[safety-policy:rm-system-path\] \S/) }
+    for (const request of rewritten) expect(await s.evaluate(request)).toMatchObject(denied)
+    expect(await s.stats.recent()).toMatchObject({ deny: 4 })
+    expect((await s.evaluate({ action: "shell", resources: ["ls"], source: source(ls.id) })).effect).toBe("allow")
+    expect((await s.evaluate({ action: "shell", resources: ["rm /tmp/y"], source: source(ls.id) })).effect).toBe("allow")
+  })
+
+  test("re-checks in the current mode, self-protection in off mode too", async () => {
+    const off = await setup({ mode: "off" })
+    expect((await off.evaluate({ action: "shell", resources: ["rm -rf /var"] })).effect).toBe("allow")
+    expect(await off.evaluate({ action: "shell", resources: ["echo x > opencode.json"] })).toMatchObject({
+      effect: "deny",
+      message: expect.stringMatching(/^\[safety-policy:self-protect\] \S/),
+    })
+    const disabled = await setup({ mode: "off", options: { alwaysProtectSelf: false } })
+    expect((await disabled.evaluate({ action: "shell", resources: ["echo x > opencode.json"] })).effect).toBe("allow")
+  })
+
+  test("does not re-check parts of a checked command out of their context", async () => {
+    // In a protected location, `touch a` alone would be denied, but it runs in its workdir.
+    const s = await setup({ directory: "/home/u/.config/opencode" })
+    const workdir = call("shell", { workdir: "/tmp/w", command: "touch a" })
+    await s.before(workdir)
+    const effect = async (resource: string, id: string) =>
+      (await s.evaluate({ action: "shell", resources: [resource], source: source(id) })).effect
+    expect(await effect("touch a", workdir.id)).toBe("allow")
+    expect(await effect("touch a", "call_execute")).toBe("allow")
+    expect(await effect("touch b", workdir.id)).toBe("deny")
   })
 
   test("matches nested Code Mode calls by session and command text", async () => {
