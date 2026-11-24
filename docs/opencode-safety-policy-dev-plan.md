@@ -399,7 +399,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 
 - 设计：5.3 第 2 点
 - 产出：`src/command.ts`、`src/hooks/session-filter.ts`
-- 要点：只在 `enableServerSlashCommand: true` 时注册。
+- 要点：命令与 session 过滤 hook 只在 `enableServerSlashCommand: true` 时注册。Session 空闲时结果写为不唤醒 Session 的 steer synthetic，运行中改为以错误返回结果，避免多出一步模型调用。参数解析从 `tui.ts` 移到 `src/report.ts` 共用。
 - commit：`feat: add optional server-side safety command`
 
 ### P2-E2E

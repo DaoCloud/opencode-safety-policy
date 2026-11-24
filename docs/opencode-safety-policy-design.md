@@ -440,7 +440,12 @@
    - **完全不写入 `session_inbox`**（不使用 `delivery: "queue"` 的 `session.synthetic`，彻底杜绝空闲或运行结束时触发幽灵 LLM 回合及过滤后引发的 400 错误，也避免 TUI 自动补全出现重复 `/safety`）。
 2. **终端 CLI 与无 TUI 场景兜底**：
    - 独立本地 CLI（`bun ./cli.ts test [--mode <mode>] [--options <file>] "<cmd>"`）供规则维护者离线回归和排障，输出与 `/safety test` 相同。它使用内置规则，工作目录为当前目录。`--mode` 选择模式，默认 `strict`，不读取环境变量和运行时状态。`--options` 读取与 `plugins[].options` 格式相同的 JSON 文件，例如带 `rulesFile` 或 `protectedEndpoints` 的配置。
-   - 仅当用户在纯 Desktop/Web App（不运行 TUI）场景显式配置 `options.enableServerSlashCommand: true` 时，服务端才额外注册 `ctx.command.transform("/safety")` 降级入口：使用 `delivery: "steer"` + `resume: false`（随下一条真实用户消息一起消费，不触发单独幽灵回合，但注意运行中调用会消耗 steer 边界）并配合 `session.hook("context" | "compaction" | "generate")` 过滤 `metadata?.source === "safety-policy"`。
+   - 仅当用户在纯 Desktop/Web App（不运行 TUI）场景显式配置 `options.enableServerSlashCommand: true` 时，服务端才额外通过 `ctx.command.transform` 注册名为 `safety` 的命令作为降级入口（`src/command.ts`），客户端经 `POST /api/session/:sessionID/command` 调用：
+     - 参数解析与 TUI 相同，执行与 RPC 相同的 `status`、`setMode`、`test` 逻辑，锁定时的拒绝与审计记录也相同。用法错误或模式被锁定时，命令以错误结束，客户端用错误 Toast 显示原因，并把输入放回输入框。
+     - Session 空闲时，结果写成一条 `session.synthetic`：`text` 与 `description` 都是结果文本，`metadata: { source: "safety-policy" }`，`delivery: "steer"`，`resume: false`。TUI 和 App 在它入队时就把带 `description` 的 synthetic 显示为一条 Notice。它不唤醒 Session，随下一条真实用户消息一起被消费，不会产生单独的 LLM 回合。
+     - Session 正在运行时（`time.busy` 晚于 `time.idle`），待消费的 steer 会让本轮在模型结束后多跑一步，所以不写 synthetic：命令照常执行，然后以错误结束，把结果文本作为错误原因显示。
+     - `src/hooks/session-filter.ts` 通过 `session.hook("context" | "compaction" | "generate" | "title")` 从请求的 `messages` 中删除 `metadata?.source === "safety-policy"` 的消息，模型看不到这些结果。
+     - 运行 TUI 时不要开启：TUI 本地的 slash 命令优先，服务端命令不会被调用，补全列表中却会出现两个 `safety`。
 
 | 命令 | 行为 |
 |---|---|
@@ -497,10 +502,10 @@ opencode-safety-policy/       # 仓库根目录
 │   ├── hooks/
 │   │   ├── tool.ts           # tool.hook("execute.before"/"execute.after")（shell+workdir 的 deny 与 ask 标记、opencode_worktree_remove/MCP 的 deny 与自发 assert；标记按插件实例存放）
 │   │   ├── permission.ts     # permission.hook("evaluate")（按 source.id / 子串匹配标记强制 shell ask、复检未检查过的 shell 命令、webfetch deny、edit canonical path）
-│   │   └── session-filter.ts # 可选服务端降级命令启用时的 session.hook("context"|"compaction"|"generate") 过滤
+│   │   └── session-filter.ts # 可选服务端降级命令启用时的 session.hook("context"|"compaction"|"generate"|"title") 过滤
 │   ├── rpc-handlers.ts       # Server 侧 RPC 处理器（status / setMode / test）
 │   ├── stats.ts              # 最近拦截统计：每次 deny/ask 追加一条 ctx.storage 记录，status 汇总最近 24 小时
-│   ├── report.ts             # /safety test 与 cli.ts 共用的结果文本格式化（无运行时依赖，供 TUI 引入）
+│   ├── report.ts             # TUI、服务端 /safety 与 cli.ts 共用的参数解析与结果文本（无运行时依赖，供 TUI 引入）
 │   ├── command.ts            # 可选降级服务端 /safety Slash Command（默认关闭，仅无 TUI 场景按需开启）
 │   └── audit.ts              # 结构化 JSONL 审计日志（配置 auditLogPath 后写入）
 └── test/
