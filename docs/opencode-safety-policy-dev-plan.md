@@ -449,7 +449,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [x] P0-11 Server 入口与 RPC
 - [x] P0-12 TUI 入口
 - [x] P0-E2E
-- [ ] P1-1 Opaque / 混淆检测
+- [x] P1-1 Opaque / 混淆检测
 - [ ] P1-2 SSH heredoc、管道与重定向
 - [ ] P1-3 HTTP 提取与受保护端点
 - [ ] P1-4 webfetch 与 Code Mode fetch

@@ -50,7 +50,7 @@ export function isReadOnly(argv: string[], list: ReadOnlyList): boolean {
   const name = normalizeName(argv[0] ?? "")
   const entries = list.get(name)
   if (!entries) return false
-  const words = positionals(argv, SPECS[name] ?? NO_OPTIONS)
+  const words = positionals(argv, (Object.hasOwn(SPECS, name) ? SPECS[name] : undefined) ?? NO_OPTIONS)
   return entries.some((entry) => entry.every((word, i) => words[i] === word))
 }
 

@@ -8,7 +8,8 @@
  *   options (`helm -n prod uninstall`) would otherwise hide the subcommand. The remaining words must follow in order,
  *   not necessarily adjacent, so that `kubectl delete --grace-period 0 namespace x` matches `delete namespace`;
  * - `flags`: one flag is present. `-f` also matches inside a short cluster such as `-rf`, `--force` also matches
- *   `--force=true`, and `--replicas=0` also matches `--replicas 0`;
+ *   `--force=true` and, for CLIs without an option table, an abbreviation such as `--for`, and `--replicas=0` also
+ *   matches `--replicas 0`;
  * - `pattern`: the regex matches `name arg1 arg2 ...`. For rules with `command`, inline stdin (heredoc / here-string)
  *   is input to that command, so the regex is also tried on `name arg1 ... stdin` with stdin whitespace collapsed
  *   (`psql <<SQL DROP TABLE x`). Rules without `command` ignore stdin so that `cat <<EOF > x.sh` is not matched;
@@ -103,13 +104,22 @@ function hasSequence(words: string[], entry: string[], anchored: boolean) {
 function hasFlag(argv: string[], flag: string, spec: OptionSpec | undefined) {
   const end = argv.indexOf("--")
   const args = argv.slice(1, end < 0 ? undefined : end)
-  const eq = flag.indexOf("=")
-  if (flag.startsWith("--") && eq > 0) {
-    const name = flag.slice(0, eq)
-    const value = flag.slice(eq + 1)
-    return args.some((arg, i) => arg === flag || (arg === name && args[i + 1] === value))
+  if (flag.startsWith("--")) {
+    const eq = flag.indexOf("=")
+    const name = eq > 0 ? flag.slice(2, eq) : flag.slice(2)
+    const value = eq > 0 ? flag.slice(eq + 1) : undefined
+    // A unique prefix of a long option works for most parsers (getopt_long, argparse) but not for CLIs with an
+    // option table, which need exact names.
+    const exact = spec !== undefined && spec.longNames === undefined
+    return args.some((arg, i) => {
+      if (!arg.startsWith("--")) return false
+      const at = arg.indexOf("=")
+      const given = at < 0 ? arg.slice(2) : arg.slice(2, at)
+      if (given !== name && (exact || given === "" || !name.startsWith(given))) return false
+      if (value === undefined) return true
+      return at < 0 ? args[i + 1] === value : arg.slice(at + 1) === value
+    })
   }
-  if (flag.startsWith("--")) return args.some((arg) => arg === flag || arg.startsWith(flag + "="))
   if (/^-[^-]$/.test(flag)) return args.some((arg) => /^-[^-]/.test(arg) && clusterLetters(arg, spec).includes(flag.charAt(1)))
   return args.includes(flag)
 }

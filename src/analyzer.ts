@@ -76,6 +76,8 @@ const OPAQUE_TEXT: Record<OpaqueReason, string> = {
   "function-definition": "定义了 shell 函数",
   "too-deep": "包装层级过深",
   "too-long": "命令过长",
+  "piped-script": "从管道或进程替换读取脚本执行，内容无法静态确定",
+  "dynamic-args": "包装命令的参数含模板或无法解析，内容无法静态确定",
 }
 
 export function analyze(input: AnalyzeInput): Analysis {

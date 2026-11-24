@@ -148,6 +148,14 @@ describe("matchRule", () => {
     expect(matches({ command: "kubectl", flags: ["--force"] }, "kubectl delete pod x --forced")).toBe(false)
   })
 
+  test("long flags match a unique prefix unless the CLI takes exact names", () => {
+    expect(matches({ command: "iptables", flags: ["--flush"] }, "iptables --flu")).toBe(true)
+    expect(matches({ command: "journalctl", flags: ["--vacuum-time"] }, "journalctl --vacuum-t=1s")).toBe(true)
+    expect(matches({ command: "journalctl", flags: ["--vacuum-files=1"] }, "journalctl --vacuum-f 1")).toBe(true)
+    expect(matches({ command: "iptables", flags: ["--flush"] }, "iptables --flushed")).toBe(false)
+    expect(matches({ command: "kubectl", flags: ["--force"] }, "kubectl delete pod x --for")).toBe(false)
+  })
+
   test("--name=value flags also match the separated form", () => {
     const zero = { command: "kubectl", flags: ["--replicas=0"] }
     expect(matches(zero, "kubectl scale --replicas=0 deploy/x")).toBe(true)

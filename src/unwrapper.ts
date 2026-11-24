@@ -6,12 +6,24 @@
  * the remote shell would parse them.
  *
  * `xargs` appends its input as the argument `$XARGS_INPUT` (or substitutes it for the `-I` string), marked as
- * expanded, so rules see a variable operand. Inline stdin (heredoc / here-string) flows into wrapped commands, and
- * a shell or `ssh` without a command runs it as a script (`bash <<EOF`, `ssh host <<EOF`).
+ * expanded, so rules see a variable operand; `find -exec` and `parallel` do the same with `$FIND_PATH` and
+ * `$PARALLEL_INPUT`. Inline stdin (heredoc / here-string) flows into wrapped commands, and a shell or `ssh` without
+ * a command runs it as a script (`bash <<EOF`, `ssh host <<EOF`). A shell or interpreter that runs a script from
+ * a pipe or a process substitution (`curl ... | bash`, `bash <(curl ...)`) yields a `piped-script` opaque atom.
  */
 
+import path from "node:path"
 import { OPTION_SPECS, readOption, shortFlags, skipOptions, type OptionSpec, type ParsedOption } from "./cli-options"
-import { isDynamicName, normalizeName, tokenize, type Command, type OpaqueReason, type Script } from "./tokenizer"
+import {
+  braceBudget,
+  isDynamicName,
+  normalizeName,
+  tokenize,
+  type BraceBudget,
+  type Command,
+  type OpaqueReason,
+  type Script,
+} from "./tokenizer"
 
 export interface Atom {
   name: string
@@ -33,7 +45,10 @@ export interface Atom {
   localCommands: Command[]
   /** Heredoc or here-string text on stdin, including stdin passed through wrappers such as `ssh` or `bash -c`. */
   stdin?: string
-  /** Directory changes by wrappers (`env -C`, `sudo -D`) in order; `null` is the home of a login (`sudo -i`, `su -`). */
+  /**
+   * Directory changes by wrappers (`env -C`, `sudo -D`, `chroot`) in order; `null` is a directory that is unknown
+   * statically, such as the home of a login (`sudo -i`, `su -`) or the directory of each file of `find -execdir`.
+   */
   chdir?: (string | null)[]
   /** Set when a script could not be parsed (`name` is `""`) or the wrapper nesting is too deep. */
   opaque?: OpaqueReason
@@ -46,28 +61,36 @@ interface Context {
   wrapperChain: string[]
   depth: number
   stdin?: string
+  /** Stdin is a pipe whose content is unknown. */
+  piped?: boolean
   chdir?: (string | null)[]
 }
 
-type Inner = { argv: string[]; expanded: boolean[]; assignments?: string[] } | { script: string }
+type Inner =
+  | { argv: string[]; expanded: boolean[]; assignments?: string[] }
+  | { script: string }
+  /** The wrapper runs code that cannot be known statically. */
+  | { opaque: OpaqueReason }
 
 interface Layer {
   label: string
   inner: Inner
   /** Switches to a remote context on this host. */
   host?: string
-  /** The script is the stdin text, so inner commands do not inherit it. */
+  /** The wrapper consumes stdin (or detaches it), so inner commands do not inherit it. */
   readsStdin?: boolean
-  /** The inner command runs in this directory; `null` when it is the home of a login. */
+  /** The inner command runs in this directory; `null` when it is unknown statically. */
   chdir?: string | null
 }
 
-type Unwrapper = (args: string[], expanded: boolean[], stdin?: string) => Layer[]
+type Unwrapper = (args: string[], expanded: boolean[], stdin?: string, piped?: boolean) => Layer[]
 
 interface Walk {
   atoms: Atom[]
   /** Characters left for re-tokenizing wrapped scripts. */
   chars: number
+  /** Brace expansion budget shared by every re-tokenized script. */
+  braces: BraceBudget
   stopped: boolean
 }
 
@@ -78,10 +101,24 @@ const MAX_ATOMS = 10_000
 const MAX_CHARS = 1 << 20
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 const SHELLS = ["sh", "bash", "zsh", "dash", "ksh", "ash"]
+const PYTHON_VERSION = /^python\d+\.\d+$/
+// Script paths that read the script from stdin.
+const STANDARD_STREAMS: Record<string, number> = { "/dev/stdin": 0, "/dev/stdout": 1, "/dev/stderr": 2 }
+const DESCRIPTOR_PATH = /^\/(?:dev\/fd|proc\/(?:self|thread-self)\/fd)\/(\d+)$/
+// Characters that make a redirect target known only at run time.
+const DYNAMIC_TARGET = /[$`*?[]/
+// Wrappers that are themselves commands to judge, not only carriers of the inner commands.
+const KEEP = new Set(["find"])
 export const XARGS_INPUT = "$XARGS_INPUT"
+export const FIND_PATH = "$FIND_PATH"
+export const PARALLEL_INPUT = "$PARALLEL_INPUT"
+// A reparsed script may quote an input placeholder (`sh -c "rm '{}'"`), which still stands for the input.
+const INPUT_PLACEHOLDER = /\$(?:XARGS_INPUT|FIND_PATH|PARALLEL_INPUT)/
+// More `parallel` input values than this are judged as one variable operand.
+const MAX_PARALLEL_VALUES = 64
 
 export function unwrap(script: Script): Atom[] {
-  const walk: Walk = { atoms: [], chars: MAX_CHARS, stopped: false }
+  const walk: Walk = { atoms: [], chars: MAX_CHARS, braces: braceBudget(), stopped: false }
   walkScript(script, { isRemote: false, localCommands: [], wrapperChain: [], depth: 0 }, walk, emptyCommand())
   return walk.atoms
 }
@@ -104,22 +141,71 @@ function stop(walk: Walk, atom: Atom) {
 function walkScript(script: Script, context: Context, walk: Walk, owner: Command) {
   if (script.opaque) emit(walk, { ...atomBase(context, owner), opaque: script.opaque })
   for (const command of script.commands) {
-    for (const sub of command.substitutions) walkScript(sub, context, walk, command)
+    // Words are expanded before the command's own redirects apply, so `$(...)` and `<(...)` read the pipe of
+    // their command or the redirects of an enclosing compound command.
+    const words = stdinOf(command, context, command.redirects.slice(0, command.outerRedirects ?? 0))
+    for (const sub of command.substitutions) {
+      const outer: Context = { ...context }
+      if (sub.piped || words.piped) outer.piped = true
+      else delete outer.piped
+      if (sub.piped || words.stdin === undefined) delete outer.stdin
+      else outer.stdin = words.stdin
+      walkScript(sub, outer, walk, command)
+    }
     const inner: Context = { ...context }
     if (!context.isRemote) inner.localCommands = [...context.localCommands, command]
-    const stdin = stdinOf(command, context.stdin)
-    if (stdin === undefined) delete inner.stdin
-    else inner.stdin = stdin
+    const input = stdinOf(command, context)
+    if (input.stdin === undefined) delete inner.stdin
+    else inner.stdin = input.stdin
+    if (input.piped) inner.piped = true
+    else delete inner.piped
     walkArgv(command.argv, command.expanded, command.assignments, inner, command, walk)
     if (walk.stopped) return
   }
 }
 
-/** The last stdin redirect wins; a pipe or a file on stdin replaces the inherited text. */
-function stdinOf(command: Command, inherited: string | undefined): string | undefined {
-  let stdin = command.connector === "|" ? undefined : inherited
-  for (const redirect of command.redirects) if ((redirect.fd ?? 0) === 0 && redirect.op.startsWith("<")) stdin = redirect.body
-  return stdin
+/**
+ * The last stdin redirect wins; a pipe or a file on stdin replaces the inherited input. `<&0`, `< /dev/stdin`
+ * and a target known only at run time keep it, `<&-` closes it, and `<&N` or `< /dev/fd/N` duplicates a
+ * descriptor whose content is unknown.
+ */
+function stdinOf(
+  command: Command,
+  context: Context,
+  redirects = command.redirects,
+): { stdin?: string; piped: boolean } {
+  const pipe = command.connector === "|" || !!command.piped
+  let stdin = pipe ? undefined : context.stdin
+  let piped = pipe || !!context.piped
+  for (const redirect of pipe ? redirects.slice(command.pipeAt ?? 0) : redirects) {
+    if ((redirect.fd ?? 0) !== 0 || !redirect.op.startsWith("<")) continue
+    const file = redirect.op === "<" || redirect.op === "<>"
+    if (redirect.op === "<&" ? redirect.target === "0" : file && DYNAMIC_TARGET.test(redirect.target)) continue
+    const descriptor = file ? descriptorOf(redirect.target) : undefined
+    if (descriptor === 0) continue
+    stdin = redirect.body
+    piped = redirect.op === "<&" ? redirect.target !== "-" : descriptor !== undefined
+  }
+  return stdin === undefined ? { piped } : { stdin, piped }
+}
+
+/** The descriptor a `/dev/stdin` or `/dev/fd/N` style path opens. */
+function descriptorOf(file: string): number | undefined {
+  if (!file.startsWith("/")) return undefined
+  const normal = path.posix.normalize(file)
+  return STANDARD_STREAMS[normal] ?? (DESCRIPTOR_PATH.test(normal) ? Number(DESCRIPTOR_PATH.exec(normal)![1]) : undefined)
+}
+
+/**
+ * How a shell or interpreter reads the script file `arg`: `"stdin"` for stdin or a path known only at run time
+ * (which may be `/dev/stdin`), `"opaque"` for a process substitution or another descriptor.
+ */
+function scriptFile(arg: string, expanded: boolean | undefined): "stdin" | "opaque" | undefined {
+  if (isProcessSubstitution(arg, expanded)) return "opaque"
+  if (expanded) return "stdin"
+  const descriptor = descriptorOf(arg)
+  if (descriptor === undefined) return undefined
+  return descriptor === 0 ? "stdin" : "opaque"
 }
 
 function atomBase(context: Context, command: Command): Atom {
@@ -148,12 +234,14 @@ function walkArgv(
   walk: Walk,
 ) {
   if (walk.stopped) return
+  if (context.depth) expanded = expanded.map((flag, k) => flag || INPUT_PLACEHOLDER.test(argv[k]!))
   const name = normalizeName(argv[0] ?? "")
   const atom: Atom = { ...atomBase(context, command), name, argv, expanded, assignments }
-  const unwrapper = isDynamicName(argv[0] ?? "", expanded[0] ?? false) ? undefined : WRAPPERS[name]
+  const unwrapper = isDynamicName(argv[0] ?? "", expanded[0] ?? false) ? undefined : wrapperFor(name)
   if (!unwrapper) return emit(walk, atom)
-  const layers = unwrapper(argv.slice(1), expanded.slice(1), context.stdin)
+  const layers = unwrapper(argv.slice(1), expanded.slice(1), context.stdin, context.piped)
   if (!layers.length) return emit(walk, atom)
+  if (KEEP.has(name)) emit(walk, atom)
   if (context.depth >= MAX_DEPTH) return emit(walk, { ...atom, opaque: "too-deep" })
   for (const layer of layers) {
     const next: Context = {
@@ -164,20 +252,30 @@ function walkArgv(
     }
     const host = layer.host ?? context.targetHost
     if (host !== undefined) next.targetHost = host
-    if (context.stdin !== undefined && !layer.readsStdin) next.stdin = context.stdin
+    if (!layer.readsStdin) {
+      if (context.stdin !== undefined) next.stdin = context.stdin
+      if (context.piped) next.piped = true
+    }
     if (layer.chdir !== undefined) next.chdir = [...(context.chdir ?? []), layer.chdir]
     else if (context.chdir) next.chdir = context.chdir
     const inner = layer.inner
-    if (!("script" in inner)) {
+    if ("opaque" in inner) {
+      emit(walk, { ...atomBase(next, command), opaque: inner.opaque })
+    } else if ("argv" in inner) {
       walkArgv(inner.argv, inner.expanded, [...assignments, ...(inner.assignments ?? [])], next, command, walk)
     } else if (inner.script.length > walk.chars) {
       stop(walk, atomBase(next, command))
     } else {
       walk.chars -= inner.script.length
-      walkScript(tokenize(inner.script), next, walk, command)
+      walkScript(tokenize(inner.script, walk.braces), next, walk, command)
     }
     if (walk.stopped) return
   }
+}
+
+function wrapperFor(name: string): Unwrapper | undefined {
+  if (Object.hasOwn(WRAPPERS, name)) return WRAPPERS[name]
+  return PYTHON_VERSION.test(name) ? interpreter(name, INTERPRETERS.python) : undefined
 }
 
 function quote(word: string) {
@@ -214,7 +312,7 @@ function optionsThen(label: string, spec: OptionSpec, skip?: (option: ParsedOpti
  * the shell (`su root -- -c cmd`), and `runuser -u user [--] command` runs a command.
  */
 function su(name: string): Unwrapper {
-  return (args, expanded, stdin) => {
+  return (args, expanded, stdin, piped) => {
     let script: string | undefined
     let user = false
     let login = false
@@ -248,7 +346,7 @@ function su(name: string): Unwrapper {
       if (first === undefined || first >= args.length) return []
       return inDir([{ label: name, inner: { argv: args.slice(first), expanded: expanded.slice(first) } }], chdir)
     }
-    return inDir(shell(name)(positionals.slice(1), [], stdin), chdir)
+    return inDir(shell(name)(positionals.slice(1), [], stdin, piped), chdir)
   }
 }
 
@@ -262,12 +360,7 @@ function xargs(args: string[], expanded: boolean[]): Layer[] {
     }
     const option = readOption(args, i, OPTION_SPECS.xargs)
     if (!option) break
-    if (option.name === "-I" || option.name === "--replace") replace = option.value || "{}"
-    else if (!option.name.startsWith("--")) {
-      // `-e[eof]`, `-l[lines]` and `-i[replace]` take an optional attached value.
-      const at = option.name.search(/[eli]/)
-      if (option.name.charAt(at) === "i") replace = option.name.slice(at + 1) || "{}"
-    }
+    if (["-I", "-i", "--replace"].includes(option.name)) replace = option.value || "{}"
     i = option.next
   }
   if (i >= args.length) return []
@@ -283,10 +376,11 @@ function xargs(args: string[], expanded: boolean[]): Layer[] {
       flags[k] = true
     }
   }
-  return [{ label: "xargs", inner: { argv, expanded: flags } }]
+  // GNU xargs runs commands with stdin on /dev/null.
+  return [{ label: "xargs", inner: { argv, expanded: flags }, readsStdin: true }]
 }
 
-function sudo(args: string[], expanded: boolean[], stdin?: string): Layer[] {
+function sudo(args: string[], expanded: boolean[], stdin?: string, piped?: boolean): Layer[] {
   const spec = OPTION_SPECS.sudo
   let i = 0
   let edit = false
@@ -308,7 +402,7 @@ function sudo(args: string[], expanded: boolean[], stdin?: string): Layer[] {
   }
   const assignments: string[] = []
   while (i < args.length && ASSIGNMENT.test(args[i]!)) assignments.push(args[i++]!)
-  if (i >= args.length) return shell && stdin !== undefined ? inDir([stdinScript("sudo -s", stdin)], chdir) : []
+  if (i >= args.length) return shell ? inDir(stdinLayers("sudo -s", stdin, piped), chdir) : []
   if (edit) return [{ label: "sudo", inner: { argv: ["sudoedit", ...args.slice(i)], expanded: [false, ...expanded.slice(i)] } }]
   return inDir([{ label: "sudo", inner: { argv: args.slice(i), expanded: expanded.slice(i), assignments } }], chdir)
 }
@@ -356,8 +450,25 @@ function stdinScript(label: string, script: string, host?: string): Layer {
   return layer
 }
 
+function opaqueLayer(label: string, host?: string, reason: OpaqueReason = "piped-script"): Layer {
+  const layer: Layer = { label, inner: { opaque: reason }, readsStdin: true }
+  if (host !== undefined) layer.host = host
+  return layer
+}
+
+/** Layers of a wrapper that runs its stdin as a script: the inline text, or an opaque script from a pipe. */
+function stdinLayers(label: string, stdin: string | undefined, piped: boolean | undefined, host?: string): Layer[] {
+  if (stdin !== undefined) return [stdinScript(label, stdin, host)]
+  return piped ? [opaqueLayer(label, host)] : []
+}
+
+/** `<(...)` passed as a script file. */
+function isProcessSubstitution(arg: string | undefined, expanded: boolean | undefined) {
+  return !!expanded && !!arg?.startsWith("<(")
+}
+
 function shell(name: string): Unwrapper {
-  return (args, _, stdin) => {
+  return (args, expanded, stdin, piped) => {
     let i = 0
     let command = false
     let fromStdin = false
@@ -382,8 +493,10 @@ function shell(name: string): Unwrapper {
     }
     const script = args[i]
     if (command) return script === undefined ? [] : [{ label: `${name} -c`, inner: { script } }]
-    if (stdin === undefined || !(fromStdin || script === undefined || script === "/dev/stdin")) return []
-    return [stdinScript(`${name} -s`, stdin)]
+    const file = script === undefined ? "stdin" : scriptFile(script, expanded[i])
+    if (file === "opaque") return [opaqueLayer(name)]
+    if (!fromStdin && file !== "stdin") return []
+    return stdinLayers(`${name} -s`, stdin, piped)
   }
 }
 
@@ -395,7 +508,7 @@ function sshHost(destination: string) {
   return host.replace(/^\[(.*)\]$/, "$1")
 }
 
-function ssh(args: string[], _: boolean[], stdin?: string): Layer[] {
+function ssh(args: string[], _: boolean[], stdin?: string, piped?: boolean): Layer[] {
   const layers: Layer[] = []
   let destination: string | undefined
   let remoteCommand: string | undefined
@@ -427,7 +540,7 @@ function ssh(args: string[], _: boolean[], stdin?: string): Layer[] {
   if (destination === undefined) return layers
   const script = i < args.length ? args.slice(i).join(" ") : remoteCommand
   if (script !== undefined) layers.push({ label: "ssh", host: sshHost(destination), inner: { script } })
-  else if (stdin !== undefined) layers.push(stdinScript("ssh", stdin, sshHost(destination)))
+  else layers.push(...stdinLayers("ssh", stdin, piped, sshHost(destination)))
   return layers
 }
 
@@ -446,16 +559,700 @@ function kubectl(args: string[], expanded: boolean[]): Layer[] {
   return [{ label: "kubectl exec", host: args[target], inner: { argv: args.slice(start), expanded: expanded.slice(start) } }]
 }
 
-function docker(args: string[], expanded: boolean[]): Layer[] {
-  let i = skipOptions(args, 0, OPTION_SPECS.docker)
-  if (args[i] === "container") i++
-  if (args[i] !== "exec") return []
-  i = skipOptions(args, i + 1, OPTION_SPECS.dockerExec)
-  const container = args[i]
-  const start = i + 1
-  if (container === undefined || start >= args.length) return []
-  return [{ label: "docker exec", host: container, inner: { argv: args.slice(start), expanded: expanded.slice(start) } }]
+/**
+ * `docker` / `nerdctl` / `podman` / `crictl` `[container] exec [options] container command...`. With one of the
+ * `select` options (`podman exec -l`, `crictl exec --name x`), containers are selected without a container argument.
+ */
+function containerExec(name: string, global: OptionSpec, exec: OptionSpec, select?: ReadonlySet<string>): Unwrapper {
+  return (args, expanded) => {
+    let i = skipOptions(args, 0, global)
+    if (args[i] === "container") i++
+    if (args[i] !== "exec") return []
+    let selected = false
+    for (i++; i < args.length; ) {
+      if (args[i] === "--") {
+        i++
+        break
+      }
+      const option = readOption(args, i, exec)
+      if (!option) break
+      if (select && optionNames(args[i]!, option, exec).some((option) => select.has(option))) selected = true
+      i = option.next
+    }
+    const container = selected ? "(selected)" : args[i]
+    const start = selected ? i : i + 1
+    if (container === undefined || start >= args.length) return []
+    return [{ label: `${name} exec`, host: container, inner: { argv: args.slice(start), expanded: expanded.slice(start) } }]
+  }
 }
+
+/** Every option `arg` sets: `--name`, or `-x` for each letter of a short option cluster. */
+function optionNames(arg: string, option: ParsedOption, spec: OptionSpec): string[] {
+  if (option.name.startsWith("--")) return [option.name]
+  const letters = [...shortFlags(arg, spec)]
+  if (option.name.length === 2) letters.push(option.name.charAt(1))
+  return letters.map((c) => `-${c}`)
+}
+
+const FIND_ACTIONS = new Set(["-exec", "-execdir", "-ok", "-okdir"])
+
+/** Every `-exec` / `-execdir` / `-ok` / `-okdir` action, ended by `;` or by `{} +`. */
+function find(args: string[], expanded: boolean[]): Layer[] {
+  const layers: Layer[] = []
+  for (let i = 0; i < args.length; i++) {
+    const action = args[i]!
+    if (!FIND_ACTIONS.has(action)) continue
+    let end = i + 1
+    while (end < args.length && args[end] !== ";" && !(args[end] === "+" && args[end - 1] === "{}")) end++
+    if (end >= args.length) break
+    const words = args.slice(i + 1, end)
+    if (words.length) {
+      const argv = words.map((word) => word.replaceAll("{}", FIND_PATH))
+      const flags = words.map((word, k) => expanded[i + 1 + k]! || word.includes("{}"))
+      const layer: Layer = { label: `find ${action}`, inner: { argv, expanded: flags } }
+      if (action.endsWith("dir")) layer.chdir = null
+      layers.push(layer)
+    }
+    i = end
+  }
+  return layers
+}
+
+/**
+ * Ad-hoc `ansible <pattern> -m shell|command|raw -a <args>`; other modules are not unwrapped. The args are a JSON
+ * object or free-form text, parsed as ansible does; Jinja2 templates in them are opaque.
+ */
+function ansible(args: string[]): Layer[] {
+  let pattern: string | undefined
+  let module = "command"
+  let text: string | undefined
+  for (let i = 0; i < args.length; ) {
+    if (args[i] === "--") {
+      pattern ??= args[i + 1]
+      break
+    }
+    const option = readOption(args, i, OPTION_SPECS.ansible)
+    if (!option) {
+      pattern ??= args[i]
+      i++
+      continue
+    }
+    if (option.name === "-m" || option.name === "--module-name") module = option.value ?? ""
+    if (option.name === "-a" || option.name === "--args") text = option.value
+    i = option.next
+  }
+  const short = module.replace(/^ansible\.(builtin|legacy)\./, "")
+  if (pattern === undefined || !text || !["command", "shell", "raw"].includes(short)) return []
+  const label = `ansible -m ${module}`
+  const opaque = [opaqueLayer(label, pattern, "dynamic-args")]
+  if (JINJA.test(text)) return opaque
+  // Python's `json` also accepts input that JSON.parse rejects (`NaN`), so a parse failure is opaque.
+  const json = text.startsWith("{") && text.endsWith("}") ? jsonObject(text) : {}
+  if (!json) return opaque
+  const params = Object.keys(json).length ? json : ansibleKv(text)
+  return params ? ansibleLayers(label, pattern, params) : opaque
+}
+
+function jsonObject(text: string): Record<string, unknown> | undefined {
+  try {
+    const value: unknown = JSON.parse(text)
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// `key=value` words that `parse_kv` takes out of the free-form args of command modules.
+const ANSIBLE_RAW_KEYS = new Set([
+  "creates",
+  "removes",
+  "chdir",
+  "executable",
+  "warn",
+  "stdin",
+  "stdin_add_newline",
+  "strip_empty_ends",
+])
+const ANSIBLE_ESCAPE = /\\(U[0-9a-fA-F]{8}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|N\{[^}]+\}|[\\'"abfnrtv])/g
+const ESCAPED: Record<string, string> = {
+  "\\": "\\",
+  "'": "'",
+  '"': '"',
+  a: "\x07",
+  b: "\b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  v: "\v",
+}
+const JINJA = /\{[{%#]/
+
+/** Ansible `parse_kv` with `check_raw`; undefined when the args cannot be parsed statically. */
+function ansibleKv(text: string): Record<string, unknown> | undefined {
+  const words = ansibleSplit(text)
+  if (!words) return undefined
+  const params: Record<string, unknown> = {}
+  const raw: string[] = []
+  for (const word of words) {
+    const decoded = ansibleDecode(word)
+    if (decoded === undefined) return undefined
+    let eq = decoded.indexOf("=", 1)
+    while (eq > 0 && decoded[eq - 1] === "\\") eq = decoded.indexOf("=", eq + 1)
+    if (!decoded.includes("=")) raw.push(word)
+    else if (eq < 0) raw.push(decoded.replaceAll("\\=", "="))
+    else if (!ANSIBLE_RAW_KEYS.has(decoded.slice(0, eq))) raw.push(word)
+    else params[decoded.slice(0, eq).trim()] = ansibleUnquote(decoded.slice(eq + 1).trim())
+  }
+  if (raw.length) params._raw_params = raw.reduce((all, word) => (!all || all.endsWith("\n") ? all + word : `${all} ${word}`), "")
+  return params
+}
+
+/** Ansible `split_args` without Jinja2 blocks: words split on spaces outside quotes, line breaks kept on words. */
+function ansibleSplit(text: string): string[] | undefined {
+  const words: string[] = []
+  const append = (suffix: string) => {
+    if (!words.length) words.push("")
+    words[words.length - 1] += suffix
+  }
+  let quoteChar: string | undefined
+  const lines = text.split("\n")
+  for (const [l, line] of lines.entries()) {
+    let continuation = false
+    for (const [k, token] of line.split(" ").entries()) {
+      if (!token && k) {
+        append(" ")
+        continue
+      }
+      if (token === "\\" && quoteChar === undefined) {
+        continuation = true
+        continue
+      }
+      const wasQuoted = quoteChar !== undefined
+      for (let c = 0; c < token.length; c++) {
+        const char = token[c]
+        if ((char !== '"' && char !== "'") || token[c - 1] === "\\") continue
+        if (quoteChar === undefined) quoteChar = char
+        else if (char === quoteChar) quoteChar = undefined
+      }
+      if (quoteChar !== undefined && !wasQuoted) words.push(token)
+      else if (quoteChar !== undefined || wasQuoted) append((k ? " " : "") + token)
+      else if (token) words.push(token)
+    }
+    if (l < lines.length - 1 && !continuation) append("\n")
+  }
+  return quoteChar === undefined ? words : undefined
+}
+
+/** Python escape sequences decoded by `parse_kv`; undefined for `\N{name}`, which needs the Unicode name table. */
+function ansibleDecode(word: string): string | undefined {
+  let failed = false
+  const decoded = word.replace(ANSIBLE_ESCAPE, (_, escape: string) => {
+    if (escape.length === 1) return ESCAPED[escape]!
+    const code = escape[0] === "N" ? NaN : parseInt(escape.slice(1), 16)
+    if (!(code <= 0x10ffff)) failed = true
+    return failed ? "" : String.fromCodePoint(code)
+  })
+  return failed ? undefined : decoded
+}
+
+function ansibleUnquote(value: string): string {
+  const quoted = value.length > 1 && value[0] === value.at(-1) && `"'`.includes(value[0]!) && value.at(-2) !== "\\"
+  return quoted ? value.slice(1, -1) : value
+}
+
+/** The command of `shell` / `command` / `raw` module params, run with their `chdir` and `stdin`. */
+function ansibleLayers(label: string, host: string, params: Record<string, unknown>): Layer[] {
+  const opaque = [opaqueLayer(label, host, "dynamic-args")]
+  const text = (value: unknown) =>
+    typeof value === "string" ? value : typeof value === "number" || typeof value === "boolean" ? String(value) : undefined
+  const fields: Record<string, string> = {}
+  for (const key of ["_raw_params", "cmd", "chdir", "stdin", "executable"]) {
+    if (params[key] === undefined || params[key] === null) continue
+    const value = text(params[key])
+    if (value === undefined) return opaque
+    fields[key] = value
+  }
+  let script = fields._raw_params ?? fields.cmd
+  if (script === undefined && params.argv !== undefined && params.argv !== null) {
+    const argv = Array.isArray(params.argv) ? params.argv.map(text) : [undefined]
+    if (argv.some((word) => word === undefined)) return opaque
+    script = argv.map((word) => quote(word!)).join(" ")
+  }
+  if (script === undefined) return []
+  const { chdir, stdin, executable } = fields
+  if ([script, chdir, stdin, executable].some((value) => value !== undefined && JINJA.test(value))) return opaque
+  // `executable` replaces `/bin/sh` of the shell and raw modules, e.g. with an interpreter for another language.
+  if (executable !== undefined && !SHELLS.includes(normalizeName(executable))) return opaque
+  // `stdin` feeds the whole command, as for `sh -c script <<EOF`.
+  if (stdin !== undefined) {
+    let delimiter = "ANSIBLE_STDIN"
+    while (stdin.split("\n").includes(delimiter)) delimiter += "_"
+    script = `sh -c ${quote(script)} <<'${delimiter}'\n${stdin}\n${delimiter}`
+  }
+  const layer: Layer = { label, host, inner: { script } }
+  if (chdir !== undefined) layer.chdir = chdir
+  return [layer]
+}
+
+/** A command run on many hosts; without a command, `pdsh` / `clush` read commands from stdin. */
+function fanOut(label: string, host: string, command: string[], stdin?: string, piped?: boolean): Layer[] {
+  if (command.length) return [{ label, host, inner: { script: command.join(" ") } }]
+  return stdinLayers(label, stdin, piped, host)
+}
+
+function pdsh(args: string[], _: boolean[], stdin?: string, piped?: boolean): Layer[] {
+  let nodes: string | undefined
+  let group: string | undefined
+  let i = 0
+  while (i < args.length) {
+    if (args[i] === "--") {
+      i++
+      break
+    }
+    const option = readOption(args, i, OPTION_SPECS.pdsh)
+    if (!option) break
+    if (option.name === "-w") nodes = option.value
+    if (option.name === "-g") group = option.value
+    i = option.next
+  }
+  return fanOut("pdsh", nodes ?? (group === undefined ? "*" : `@${group}`), args.slice(i), stdin, piped)
+}
+
+function pssh(name: string): Unwrapper {
+  return (args) => {
+    let host = "*"
+    let i = 0
+    while (i < args.length) {
+      if (args[i] === "--") {
+        i++
+        break
+      }
+      const option = readOption(args, i, OPTION_SPECS.pssh)
+      if (!option) break
+      if (option.name === "-H" || option.name === "--host") host = option.value ?? host
+      i = option.next
+    }
+    return fanOut(name, host, args.slice(i))
+  }
+}
+
+function clush(args: string[], _: boolean[], stdin?: string, piped?: boolean): Layer[] {
+  const spec = OPTION_SPECS.clush
+  let nodes: string | undefined
+  let group: string | undefined
+  let i = 0
+  while (i < args.length) {
+    if (args[i] === "--") {
+      i++
+      break
+    }
+    const option = readOption(args, i, spec)
+    if (!option) break
+    // `-c` / `--copy` / `--rcopy` copy files instead of running a command.
+    if (option.name === "--copy" || option.name === "--rcopy" || shortFlags(args[i]!, spec).includes("c")) return []
+    if (option.name === "-w") nodes = option.value
+    if (option.name === "-g" || option.name === "--group") group = option.value
+    i = option.next
+  }
+  const host = nodes ?? (group === undefined ? "*" : `@${group.replace(/^@/, "")}`)
+  return fanOut("clush", host, args.slice(i), stdin, piped)
+}
+
+/** `chroot [options] newroot [command...]` runs in `/` of the new root; without a command it runs a shell. */
+function chroot(args: string[], expanded: boolean[], stdin?: string, piped?: boolean): Layer[] {
+  let skip = false
+  let i = 0
+  while (i < args.length) {
+    if (args[i] === "--") {
+      i++
+      break
+    }
+    const option = readOption(args, i, OPTION_SPECS.chroot)
+    if (!option) break
+    if (option.name === "--skip-chdir") skip = true
+    i = option.next
+  }
+  if (i >= args.length) return []
+  const start = i + 1
+  const layers: Layer[] =
+    start < args.length
+      ? [{ label: "chroot", inner: { argv: args.slice(start), expanded: expanded.slice(start) } }]
+      : shell("chroot")([], [], stdin, piped)
+  return inDir(layers, skip ? undefined : "/")
+}
+
+/** `flock [options] file command...` or `flock [options] file -c command`; `flock fd` runs nothing. */
+function flock(args: string[], expanded: boolean[]): Layer[] {
+  const start = skipOptions(args, 0, OPTION_SPECS.flock) + 1
+  if (start >= args.length) return []
+  if (args[start] !== "-c" && args[start] !== "--command") {
+    return [{ label: "flock", inner: { argv: args.slice(start), expanded: expanded.slice(start) } }]
+  }
+  const script = args[start + 1]
+  return script === undefined ? [] : [{ label: "flock -c", inner: { script } }]
+}
+
+/** `watch` runs its joined arguments with `sh -c`, or the arguments themselves with `-x`. */
+function watch(args: string[], expanded: boolean[]): Layer[] {
+  const spec = OPTION_SPECS.watch
+  let exec = false
+  let i = 0
+  while (i < args.length) {
+    if (args[i] === "--") {
+      i++
+      break
+    }
+    const option = readOption(args, i, spec)
+    if (!option) break
+    if (option.name === "--exec" || shortFlags(args[i]!, spec).includes("x")) exec = true
+    i = option.next
+  }
+  if (i >= args.length) return []
+  if (exec) return [{ label: "watch", inner: { argv: args.slice(i), expanded: expanded.slice(i) } }]
+  return [{ label: "watch", inner: { script: args.slice(i).join(" ") } }]
+}
+
+// The default replacement strings of `parallel` besides `{}`, with the part of the input each stands for.
+const REPLACEMENTS: [string, string][] = [
+  ["{//}", "//"],
+  ["{/.}", "/."],
+  ["{/}", "/"],
+  ["{.}", "."],
+  ["{#}", "#"],
+  ["{%}", "%"],
+]
+// Options that rename or add replacement strings, which may turn the input into any text.
+const PARALLEL_RENAMES = new Set(
+  "--rpl --plus --parens --er --extensionreplace --bnr --basenamereplace --dnr --dirnamereplace --bner --basenameextensionreplace --seqreplace --slotreplace --header".split(
+    " ",
+  ),
+)
+// Options that change the text of the values: columns, other separators, trimming.
+const PARALLEL_SPLITS = new Set("-C --colsep --col-sep --csv -d --delimiter --null --trim".split(" "))
+// Options that put several values in one job, besides `-m` and `-X`.
+const PARALLEL_GROUPS = new Set("-L -l --max-lines --maxlines --xargs".split(" "))
+// A command word split into text and replacement strings; `position` is that of a positional one (`{2}`).
+type Template = (string | { op: string; position?: string })[]
+/**
+ * The values a job's replacement strings stand for: unknown, one `value` that positions name when the job has
+ * `size` values (all positions without a size), or all `values`, joined.
+ */
+type JobInput = { value?: string; values?: string[]; seq?: number; size?: number }
+
+/**
+ * GNU `parallel`: the command words are joined and run by a shell once per input value. Values are the lines of
+ * `:::` arguments or of stdin; `::::` files, `-a`, piped stdin, dynamic values and options that split values
+ * make them unknown. Several sources and options that put several values in one job group them.
+ */
+function parallel(argv: string[], expanded: boolean[], stdin?: string, piped?: boolean): Layer[] {
+  const spec = OPTION_SPECS.parallel
+  const args = [...argv]
+  let host: string | undefined
+  let replaceI: string | undefined
+  let replaceLower: string | undefined
+  let chdir: string | null | undefined
+  let argSep = ":::"
+  let fileSep = "::::"
+  let quoteWords = false
+  let pipe = false
+  let source = false
+  let unknown = false
+  let grouped = false
+  let maxArgs: string | undefined
+  let maxReplaceArgs: string | undefined
+  let maxLines: string | undefined
+  let renamed = false
+  const isFile = (word: string) => word === fileSep || word === `${fileSep}+`
+  const isSource = (word: string) => word === argSep || word === `${argSep}+` || isFile(word)
+  let i = 0
+  while (i < args.length && !isSource(args[i]!)) {
+    if (args[i] === "--") {
+      i++
+      break
+    }
+    const option = readOption(args, i, spec)
+    if (!option) break
+    const { name, value } = option
+    const flags = shortFlags(args[i]!, spec)
+    if (name === "-S" || name === "--sshlogin") host = value === ":" ? host : (value ?? "*")
+    if (name === "--sshloginfile" || name === "--slf") host = "*"
+    if (name === "-I") replaceI = value
+    if (name === "-i" || name === "--replace") replaceLower = value
+    if (name === "-a" || name === "--arg-file" || name === "--argfile") source = unknown = true
+    if (PARALLEL_RENAMES.has(name)) renamed = true
+    if (PARALLEL_SPLITS.has(name) || flags.includes("0")) unknown = true
+    if (PARALLEL_GROUPS.has(name) || /[mX]/.test(flags)) grouped = true
+    if (name === "-n" || name === "--max-args" || name === "--maxargs") maxArgs = value
+    if (name === "-N" || name === "--max-replace-args" || name === "--maxreplaceargs") maxReplaceArgs = value
+    if (name === "-L") maxLines = value
+    if (name === "--arg-sep" || name === "--argsep") argSep = value ?? argSep
+    if (name === "--arg-file-sep" || name === "--argfilesep") fileSep = value ?? fileSep
+    // `--wd ...` is a new temporary directory.
+    if (name === "--work-dir" || name === "--workdir" || name === "--wd") chdir = value === "..." ? null : value
+    if (name === "--quote" || name === "-q" || flags.includes("q")) quoteWords = true
+    if (["--pipe", "--spreadstdin", "--pipe-part", "--pipepart"].includes(name)) pipe = true
+    if (option.rest) args[i] = option.rest
+    else i = option.next
+  }
+  let end = i
+  while (end < args.length && !isSource(args[end]!)) end++
+  const words = args.slice(i, end)
+  const command = words.map((word) => (quoteWords ? parallelQuote(word) : word)).join(" ")
+  // `-I` and a `-i` value Perl treats as true both rename `{}`.
+  const keys = [replaceI, replaceLower !== "0" ? replaceLower : undefined].filter((key): key is string => !!key)
+  const inputs = keys.length ? keys : ["{}"]
+  // An empty replacement string makes parallel loop forever, a `(...)` in one is a regex, and a word with an
+  // unclosed `{=` is joined to the next ones.
+  if (renamed || replaceI === "" || keys.some((key) => /\(.*\)/s.test(key)) || words.slice(0, -1).some(unclosedPerl)) {
+    return [opaqueLayer("parallel", host, "dynamic-args")]
+  }
+  // The work dir may contain replacement strings too.
+  if (chdir && replacements(chdir, inputs).some((part) => typeof part !== "string")) chdir = null
+  const layer = (inner: Inner): Layer => {
+    // Jobs read stdin only with `--pipe`.
+    const result: Layer = { label: "parallel", inner, readsStdin: !pipe }
+    if (host !== undefined) result.host = host
+    if (chdir !== undefined) result.chdir = chdir
+    return result
+  }
+  if (pipe) return command ? [layer({ script: command })] : []
+  const values: string[] = []
+  let fromFile = false
+  let sources = 0
+  for (let k = end; k < args.length; k++) {
+    if (isSource(args[k]!)) {
+      source = true
+      sources++
+      fromFile = isFile(args[k]!)
+    } else if (fromFile || (command && expanded[k])) unknown = true
+    // `parallel` reads the arguments back as lines.
+    else values.push(...args[k]!.split("\n"))
+  }
+  // `-N` overrides `-n`, and `-n 0` runs each job without values.
+  const count = parallelCount(maxReplaceArgs ?? maxArgs)
+  const none = count === 0 || Number.isNaN(count) || [0, NaN].includes(parallelCount(maxLines)!)
+  if (sources > 1 || (count !== undefined && count > 1) || Number.isNaN(count)) grouped = true
+  if (!source) {
+    if (stdin !== undefined) values.push(...(stdin ? stdin.replace(/\n$/, "").split("\n") : []))
+    else if (!command) return piped ? [opaqueLayer("parallel", host)] : []
+    else unknown = true
+  }
+  if (!command) {
+    return unknown || grouped ? [opaqueLayer("parallel", host, "dynamic-args")] : values.map((script) => layer({ script }))
+  }
+  const templates = words.map((word) => replacements(word, inputs))
+  const parts = templates.flat().filter((part) => typeof part !== "string").length
+  const lead = templates[0]!.findIndex((part) => typeof part !== "string")
+  // A replacement string in the first word, after no blank or `=`, leaves the values unquoted.
+  const quoted = quoteWords || lead < 0 || /[ \t\n=]/.test(templates[0]!.slice(0, lead).join(""))
+  const job = (input: JobInput) => {
+    if (parts) return withInput(templates, quoteWords, quoted, input)
+    if (input.size === 0) return command
+    const { value, values } = input
+    return `${command} ${values ? values.map(parallelQuote).join(" ") : value === undefined ? PARALLEL_INPUT : parallelQuote(value)}`
+  }
+  // Unquoted values grouped in one job may form any command.
+  if (unknown || (grouped && !quoted) || values.length > MAX_PARALLEL_VALUES) return [layer({ script: job({}) })]
+  if (!values.length) return []
+  const one = values.map((value, k) => ({ value, seq: k + 1, size: 1 }))
+  // A job holds one or more of the values, in any order: each value at every position, each value alone, and
+  // all values at once.
+  const jobs: JobInput[] = grouped
+    ? [...values.map((value, k) => ({ value, seq: k + 1 })), ...one, { values, seq: 1 }]
+    : none
+      ? []
+      : one
+  if (none) jobs.push(...values.map((_, k) => ({ value: "", seq: k + 1, size: 0 })))
+  const length = (value: string) => parallelQuote(value).length + 20
+  const text = templates.flat().reduce<number>((n, part) => n + (typeof part === "string" ? part.length : 0), words.length)
+  const size = jobs.reduce((n, { value = "", values = [value] }) => {
+    return n + text + Math.max(parts, 1) * values.reduce((m, value) => m + length(value), 0)
+  }, 0)
+  if ((quoteWords ? 4 : 1) * size > MAX_CHARS) return [opaqueLayer("parallel", host, "too-long")]
+  return [...new Set(jobs.map(job))].map((script) => layer({ script }))
+}
+
+/**
+ * A `parallel` count, which is a Perl expression: digits are a number, a blank one means unset (one value per
+ * job) and others may be anything, 0 included.
+ */
+function parallelCount(value: string | undefined): number | undefined {
+  if (value === undefined || /^\s*\+?\d+\s*$/.test(value)) return value === undefined ? undefined : Number(value)
+  return value.trim() ? NaN : 1
+}
+
+/**
+ * Splits a `parallel` command word at its replacement strings the way `parallel` does: first the shortest
+ * `{= perl =}` expressions, then the other strings from the longest, each also in its positional form
+ * (`{1}`, `{-1 /}`) when it starts with `{`.
+ */
+function replacements(word: string, inputs: string[]): Template {
+  let parts: Template = splitPerl(word)
+  const table = new Map(REPLACEMENTS)
+  for (const input of inputs) table.set(input, "")
+  for (const [key, op] of [...table].sort((a, b) => b[0].length - a[0].length)) {
+    const literal = key.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")
+    const patterns = [new RegExp(literal, "g")]
+    // Perl's `\s` on argument bytes is ASCII.
+    if (key.startsWith("{")) patterns.push(new RegExp(`\\{(-?\\d+)[ \\t\\n\\v\\f\\r]*${literal.slice(2)}`, "g"))
+    for (const pattern of patterns) {
+      parts = parts.flatMap((part) => {
+        if (typeof part !== "string") return [part]
+        const split: Template = []
+        let from = 0
+        for (const match of part.matchAll(pattern)) {
+          split.push(part.slice(from, match.index), match[1] === undefined ? { op } : { op, position: match[1] })
+          from = match.index + match[0].length
+        }
+        split.push(part.slice(from))
+        return split
+      })
+    }
+  }
+  return parts
+}
+
+/** The `parallel` command line of the word templates for a job; `-q` quotes whole words. */
+function withInput(templates: Template[], quoteWords: boolean, quoted: boolean, input: JobInput): string {
+  const { value, values, seq, size } = input
+  const text = (value: string, op: string) => {
+    const text = op === "#" ? String(seq) : pathPart(value, op)
+    return quoted ? parallelQuote(text) : text
+  }
+  const render = (part: Template[number]) => {
+    if (typeof part === "string") return quoteWords && part ? parallelQuote(part) : part
+    // `{= perl =}` and the job slot `{%}` are computed at run time.
+    if ((value === undefined && !values) || part.op === "=" || part.op === "%") {
+      return quoteWords ? `"${PARALLEL_INPUT}"` : PARALLEL_INPUT
+    }
+    if (values) return values.map((value) => text(value, part.op)).join(" ")
+    if (part.position !== undefined && !namesValue(part.position, size)) return ""
+    return text(value!, part.op)
+  }
+  return templates.map((template) => template.map(render).join("") || (quoteWords ? "''" : "")).join(" ")
+}
+
+/** Whether `position` names a value of a job with `size` values, or of any job without a size. */
+function namesValue(position: string, size?: number): boolean {
+  // Perl treats "0" as false, which makes `{0}` a plain replacement string.
+  if (position === "0") return true
+  const n = Number(position)
+  if (n === 0) return false
+  // Others count from the end, and Perl's negative indexes wrap once.
+  return size === undefined || (n > 0 ? n <= size : -n <= 2 * size)
+}
+
+/** Whether a command word may keep a `{=` that `parallel` closes in the next words; over-approximated. */
+function unclosedPerl(word: string): boolean {
+  return splitPerl(word)
+    .filter((part) => typeof part === "string")
+    .join("")
+    .includes("{=")
+}
+
+/** Splits a command line at its shortest `{= perl =}` expressions, which `parallel` evaluates at run time. */
+function splitPerl(command: string): Template {
+  const parts: Template = []
+  let from = 0
+  let open = command.indexOf("{=")
+  let close = -1
+  while (open >= 0) {
+    if (close < open + 2) close = command.indexOf("=}", open + 2)
+    if (close < 0) break
+    // An expression contains no `{=`, so an earlier unmatched `{=` stays text.
+    const next = command.indexOf("{=", open + 2)
+    if (next >= 0 && next < close) {
+      open = next
+      continue
+    }
+    parts.push(command.slice(from, open), { op: "=" })
+    from = close + 2
+    open = command.indexOf("{=", from)
+  }
+  parts.push(command.slice(from))
+  return parts
+}
+
+/** `{}` / `{.}` / `{/}` / `{//}` / `{/.}` of a `parallel` input value. */
+/** Quotes like `parallel`, which leaves only `[-_.+/a-zA-Z0-9]+` bare. */
+function parallelQuote(word: string) {
+  return /^[-\w.+/]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`
+}
+
+/** File::Basename's `dirname`, which drops trailing slashes. */
+function dirname(path: string): string {
+  const parse = (path: string) => {
+    const slash = path.lastIndexOf("/")
+    return [slash < 0 ? "./" : path.slice(0, slash + 1), path.slice(slash + 1)] as const
+  }
+  const strip = (dir: string) => dir.replace(/([\s\S])\/*$/, "$1")
+  const [dir, base] = parse(path)
+  return strip(base ? dir : parse(strip(dir))[0])
+}
+
+function pathPart(value: string, op: string): string {
+  const slash = value.lastIndexOf("/")
+  const base = value.slice(slash + 1)
+  if (op === "/") return base
+  if (op === "//") return dirname(value)
+  if (op === ".") return value.replace(/\.[^./]*$/, "")
+  if (op === "/.") return base.replace(/\.[^.]*$/, "")
+  return value
+}
+
+/** `source` / `.` of a process substitution or of piped stdin. */
+function source(name: string): Unwrapper {
+  return (args, expanded, stdin, piped) => {
+    const i = args[0] === "--" ? 1 : 0
+    const file = args[i] === undefined ? undefined : scriptFile(args[i]!, expanded[i])
+    if (file === "opaque") return [opaqueLayer(name)]
+    return file === "stdin" ? stdinLayers(name, stdin, piped) : []
+  }
+}
+
+interface InterpreterSpec {
+  options: OptionSpec
+  /** Options whose value is the program, so no script file or stdin is read. */
+  code: string[]
+  /** Options that only print information. */
+  info: string[]
+}
+
+const INTERPRETERS = {
+  python: { options: OPTION_SPECS.python, code: ["-c", "-m"], info: ["-V", "--version", "-h", "--help"] },
+  perl: { options: OPTION_SPECS.perl, code: ["-e", "-E"], info: ["-v", "-V", "--version", "-h", "--help"] },
+  ruby: { options: OPTION_SPECS.ruby, code: ["-e"], info: ["-v", "--version", "-h", "--help"] },
+  node: {
+    options: OPTION_SPECS.node,
+    code: ["-e", "-p", "--eval", "--print"],
+    info: ["-v", "--version", "-h", "--help", "-c", "--check"],
+  },
+} satisfies Record<string, InterpreterSpec>
+
+/** An interpreter that runs its program from a pipe (no script or `-`) or from a process substitution. */
+function interpreter(name: string, { options, code, info }: InterpreterSpec): Unwrapper {
+  return (args, expanded, _, piped) => {
+    let i = 0
+    while (i < args.length) {
+      if (args[i] === "--") {
+        i++
+        break
+      }
+      const option = readOption(args, i, options)
+      if (!option) break
+      if (code.includes(option.name) || info.includes(option.name)) return []
+      i = option.next
+    }
+    const script = args[i]
+    const file = script === undefined || script === "-" ? "stdin" : scriptFile(script, expanded[i])
+    if (file === "opaque") return [opaqueLayer(name)]
+    return piped && file === "stdin" ? [opaqueLayer(name)] : []
+  }
+}
+
+// `crictl exec` filters that select containers instead of a container argument.
+const CRICTL_SELECT = new Set(["--name", "--pod", "-p", "--image", "--state", "--label", "--latest", "-l", "--last", "-n"])
 
 const WRAPPERS: Record<string, Unwrapper> = {
   sudo,
@@ -481,6 +1278,26 @@ const WRAPPERS: Record<string, Unwrapper> = {
   eval: (args) => (args.length ? [{ label: "eval", inner: { script: args.join(" ") } }] : []),
   ssh,
   kubectl,
-  docker,
+  docker: containerExec("docker", OPTION_SPECS.docker, OPTION_SPECS.dockerExec),
+  nerdctl: containerExec("nerdctl", OPTION_SPECS.nerdctl, OPTION_SPECS.nerdctlExec),
+  podman: containerExec("podman", OPTION_SPECS.podman, OPTION_SPECS.podmanExec, new Set(["-l", "--latest", "--cidfile"])),
+  crictl: containerExec("crictl", OPTION_SPECS.crictl, OPTION_SPECS.crictlExec, CRICTL_SELECT),
+  find,
+  ansible,
+  pdsh,
+  pssh: pssh("pssh"),
+  "parallel-ssh": pssh("parallel-ssh"),
+  clush,
+  chroot,
+  flock,
+  watch,
+  parallel,
+  source: source("source"),
+  ".": source("."),
   ...Object.fromEntries(SHELLS.map((name) => [name, shell(name)])),
+  ...Object.fromEntries(["python", "python2", "python3"].map((name) => [name, interpreter(name, INTERPRETERS.python)])),
+  perl: interpreter("perl", INTERPRETERS.perl),
+  ruby: interpreter("ruby", INTERPRETERS.ruby),
+  node: interpreter("node", INTERPRETERS.node),
+  nodejs: interpreter("nodejs", INTERPRETERS.node),
 }

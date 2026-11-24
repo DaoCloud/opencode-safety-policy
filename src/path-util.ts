@@ -68,7 +68,13 @@ interface PathCommand {
   leading?: number
 }
 
-const spec = (shortValue: string, longValue: string[] = []): OptionSpec => ({ shortValue, longValue: new Set(longValue) })
+// The coreutils parse with getopt_long. None of their flags is a prefix of a value name, so the value names are
+// enough to expand abbreviated long options.
+const spec = (shortValue: string, longValue: string[] = []): OptionSpec => ({
+  shortValue,
+  longValue: new Set(longValue),
+  longNames: longValue,
+})
 const plain: PathCommand = { spec: spec("") }
 const ownership: PathCommand = { spec: spec("", ["reference", "from"]), leading: 1 }
 const copy: PathCommand = {
@@ -126,9 +132,9 @@ export function expandPathArgs(
     return { argv: out, paths }
   }
 
-  const command = PATH_COMMANDS[name]
+  const command = Object.hasOwn(PATH_COMMANDS, name) ? PATH_COMMANDS[name] : undefined
   if (!command) return { argv: out, paths }
-  const reference = argv.some((arg) => arg === "--reference" || arg.startsWith("--reference="))
+  const reference = argv.some((_, i) => i > 0 && readOption(argv, i, command.spec)?.name === "--reference")
   let leading = reference ? 0 : (command.leading ?? 0)
   let ended = false
   for (let i = 1; i < argv.length; ) {

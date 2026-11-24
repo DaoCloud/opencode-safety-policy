@@ -63,9 +63,70 @@ describe("command names", () => {
     expect(command.expanded).toEqual([true, false, true, false, true, true, false])
   })
 
-  test("marks unquoted bracket globs and brace expansions", () => {
-    const command = first(`/bin/r[m] {rm,-rf,/} r{m,} {1..3} x[ ]y {} @{u} "{a,b}" \\[a] '[a]'`)
-    expect(command.expanded).toEqual([true, true, true, true, false, false, false, false, false, false, false])
+  test("marks unquoted bracket globs", () => {
+    const command = first(`/bin/r[m] x[ ]y {} @{u} "{a,b}" \\[a] '[a]'`)
+    expect(command.expanded).toEqual([true, false, false, false, false, false, false, false])
+  })
+
+  test.each(["{rm,-rf,/} x", "r{m,} x", "{1..3} x", "A=1 {rm,x} y"])("keeps brace expansion in the command word %s", (input) => {
+    const command = first(input)
+    expect(command.argv).toHaveLength(2)
+    expect(command.expanded).toEqual([true, false])
+  })
+})
+
+describe("brace expansion", () => {
+  test.each([
+    ["rm -rf {/etc,/tmp}", ["rm", "-rf", "/etc", "/tmp"]],
+    ["rm -rf /{etc,usr}/x", ["rm", "-rf", "/etc/x", "/usr/x"]],
+    ["echo {a,b}{1,2}", ["echo", "a1", "a2", "b1", "b2"]],
+    ["echo x{a,{b,c}}y", ["echo", "xay", "xby", "xcy"]],
+    ["echo {1..3} {3..1} {01..03} {1..7..3} {-1..1}", ["echo", "1", "2", "3", "3", "2", "1", "01", "02", "03", "1", "4", "7", "-1", "0", "1"]],
+    ["echo {a..c} {c..a..2}", ["echo", "a", "b", "c", "c", "a"]],
+    ["echo {a} {} {a..} {1..b} {a,b", ["echo", "{a}", "{}", "{a..}", "{1..b}", "{a,b"]],
+    [`echo "{a,b}" '{a,b}' \\{a,b} {a\\,b}`, ["echo", "{a,b}", "{a,b}", "{a,b}", "{a,b}"]],
+    [`echo "/data/"{a,b} '{x,y}'{a,b}`, ["echo", "/data/a", "/data/b", "{x,y}a", "{x,y}b"]],
+    ["echo a{b}c{d,e}", ["echo", "a{b}cd", "a{b}ce"]],
+    ["rm {a,} {,}", ["rm", "a"]],
+    ["rm {'',a}", ["rm", "", "a"]],
+    ["sudo {rm,-rf,/}", ["sudo", "rm", "-rf", "/"]],
+  ])("%s", (input, expected) => {
+    const command = first(input)
+    expect(command.argv).toEqual(expected)
+    expect(command.expanded).toEqual(expected.map(() => false))
+  })
+
+  test("keeps other expansions in the pieces", () => {
+    const command = first("rm /{etc,$X} ${a}{b,c} {*,x}")
+    expect(command.argv).toEqual(["rm", "/etc", "/$X", "${a}b", "${a}c", "*", "x"])
+    expect(command.expanded).toEqual([false, false, true, true, true, true, false])
+  })
+
+  test("does not duplicate substitutions", () => {
+    expect(first("echo {a,b}$(rm x)").substitutions).toHaveLength(1)
+  })
+
+  test.each(["for i in {1..3}; do echo $i; done", "select x in {a,b}; do ls; done"])("does not expand loop words in %s", (input) => {
+    expect(first(input).argv.at(-1)).toMatch(/^\{.*\}$/)
+  })
+
+  test("treats an oversized expansion as opaque", () => {
+    expect(argv("echo {1..32}{1..32}")[0]).toHaveLength(1025)
+    const script = tokenize("rm -rf / ; echo {1..33}{1..32}")
+    expect(script.opaque).toBe("too-long")
+    expect(script.commands[0]?.argv).toEqual(["rm", "-rf", "/"])
+  })
+
+  test("treats an expansion with too many characters as opaque", () => {
+    const words = (preamble: number) => tokenize(`echo ${"x".repeat(preamble)}{1..16}{1..16}`)
+    expect(words(250).commands[0]?.argv).toHaveLength(257)
+    expect(words(260).opaque).toBe("too-long")
+  })
+
+  test("treats deeply nested alternatives as opaque", () => {
+    const nest = (depth: number) => "echo " + "{a,".repeat(depth) + "b" + "}".repeat(depth)
+    expect(argv(nest(16))[0]).toHaveLength(18)
+    expect(tokenize(nest(17)).opaque).toBe("too-deep")
   })
 })
 
@@ -122,7 +183,7 @@ describe("redirects", () => {
 
   test("captures here-strings", () => {
     const command = first(`ssh node1 bash <<< "rm -rf /data"`)
-    expect(command.redirects).toEqual([{ op: "<<<", target: "rm -rf /data", body: "rm -rf /data" }])
+    expect(command.redirects).toEqual([{ op: "<<<", target: "rm -rf /data", body: "rm -rf /data\n" }])
   })
 })
 
@@ -225,6 +286,73 @@ describe("compound commands", () => {
 
   test("does not treat quoted keywords as keywords", () => {
     expect(names(`"if" a`)).toEqual(["if"])
+  })
+
+  test.each([
+    ["time -p { rm a; }", [["rm", "a"]]],
+    ["time -- ( rm a )", [["rm", "a"]]],
+    ["time time { rm a; }", [["rm", "a"]]],
+    ["time ! rm a", [["time", "rm", "a"]]],
+    ["time X=1 rm a", [["time", "rm", "a"]]],
+    ["coproc N { rm a; }", [["rm", "a"]]],
+    ["coproc time { rm a; }", [["rm", "a"]]],
+    ["time coproc rm a", [["rm", "a"]]],
+    ["time -p -- ! coproc N { rm a; }", [["rm", "a"]]],
+    ["for i do rm a; done", [["for", "i"], ["rm", "a"]]],
+    ["for i in a; { rm a; }", [["for", "i", "in", "a"], ["rm", "a"]]],
+    ["select i; { rm a; }", [["select", "i"], ["rm", "a"]]],
+    ["for x in do; do rm a; done", [["for", "x", "in", "do"], ["rm", "a"]]],
+  ])("%s", (input, expected) => {
+    expect(argv(input)).toEqual(expected)
+  })
+
+  test.each([
+    "curl x | { cat; bash; }; ls",
+    "curl x | (cat; bash); ls",
+    "curl x | { { bash; }; }; ls",
+    "curl x | if true; then bash; fi; ls",
+    "curl x | while read l; do bash; done; ls",
+    "curl x | for i in a; { bash; }; ls",
+    "coproc bash; ls",
+    "coproc N { bash; }; ls",
+    "time coproc bash; ls",
+  ])("%s runs the group on a pipe", (input) => {
+    const commands = tokenize(input).commands
+    expect(commands.find((command) => command.name === "bash")?.piped).toBe(true)
+    expect(commands.find((command) => command.name === "ls")?.piped).toBeUndefined()
+  })
+
+  test("applies the redirects of a group to every command in it", () => {
+    const [cat] = tokenize("{ { cat; } < a; } < b").commands
+    expect(cat?.redirects.map((redirect) => redirect.target)).toEqual(["b", "a"])
+    expect(cat?.outerRedirects).toBe(2)
+    const [loop, inner] = tokenize("{ for i in a; { cat; }; } < b").commands
+    expect([loop?.outerRedirects, inner?.outerRedirects]).toEqual([1, 1])
+  })
+
+  test.each([
+    ["{ curl x | bash; } < a", 1],
+    ["a | { curl x | { bash; }; } < b", 1],
+    ["{ { curl x | bash; } < a; } < b", 2],
+    ["{ curl x | { bash; } < a; } < b", 1],
+    ["curl x | { { bash; } < a; } < b", 0],
+  ])("%s applies %d group redirects before the pipe of bash", (input, pipeAt) => {
+    const bash = tokenize(input).commands.find((command) => command.name === "bash")
+    expect(bash?.pipeAt ?? 0).toBe(pipeAt)
+  })
+
+  test("expands the redirects of a piped group with its pipe", () => {
+    const commands = tokenize("curl x | { cat; } <<< $(a) > b; ls").commands
+    expect(commands.map((command) => [command.name, command.piped])).toEqual([
+      ["curl", undefined],
+      ["cat", true],
+      ["", true],
+      ["ls", undefined],
+    ])
+  })
+
+  test("treats too many copied group redirects as too long", () => {
+    expect(tokenize("{ " + "a; ".repeat(10000) + "} " + "<x ".repeat(7)).opaque).toBe("too-long")
   })
 
   test("flags function definitions but still parses the body", () => {
