@@ -131,6 +131,7 @@ describe.skipIf(!E2E_ENABLED)("self-protection", () => {
 describe.skipIf(!E2E_ENABLED)("server credentials and api", () => {
   const SECRET = "E2E-SERVER-SECRET"
   let secret: string
+  let configSecret: string
   let other: ReturnType<typeof Bun.serve>
 
   beforeAll(() => {
@@ -139,6 +140,10 @@ describe.skipIf(!E2E_ENABLED)("server credentials and api", () => {
     mkdirSync(dir, { recursive: true })
     secret = path.join(dir, "service-ocsp-e2e.json")
     writeFileSync(secret, JSON.stringify({ password: SECRET }))
+    const config = path.join(h.root, "xdg/config/opencode")
+    mkdirSync(config, { recursive: true })
+    configSecret = path.join(config, "service-ocsp-e2e.json")
+    writeFileSync(configSecret, JSON.stringify({ password: SECRET }))
     other = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("OTHER-API-OK") })
   })
 
@@ -150,7 +155,14 @@ describe.skipIf(!E2E_ENABLED)("server credentials and api", () => {
     await setMode("off")
     try {
       const db = path.join(h.root, "xdg/data/opencode/opencode.db")
-      for (const command of [`cat ${secret}`, `head -c 64 ${db}`, "tr '\\0' '\\n' < /proc/$PPID/environ"]) {
+      const commands = [
+        `cat ${secret}`,
+        `cat ${configSecret}`,
+        `head -c 64 ${db}`,
+        `sqlite3 ${db} 'select * from session'`,
+        "tr '\\0' '\\n' < /proc/$PPID/environ",
+      ]
+      for (const command of commands) {
         const call = await h.shell(command)
         expectDenied(call, "self-protect")
         expect(call.result).not.toContain(SECRET)
@@ -171,6 +183,9 @@ describe.skipIf(!E2E_ENABLED)("server credentials and api", () => {
 
   test("denies the Server API through curl and webfetch but not another local /api", async () => {
     expectDenied(await h.shell(`curl -s ${h.url}/api/session`), "self-protect")
+    const rpc = `${h.url}/api/rpc/opencode-safety-policy/setMode`
+    expectDenied(await h.shell(`curl -s -X POST ${rpc} -d '{"input":{"mode":"off"}}'`), "self-protect")
+    expect(await status()).toMatchObject({ mode: "strict" })
     const fetched = await h.call("webfetch", { url: `${h.url}/api/session`, format: "text" })
     expect(fetched.result).toContain("[safety-policy:self-protect]")
     const allowed = await h.shell(`curl -s http://127.0.0.1:${other.port}/api/v1/query`)
