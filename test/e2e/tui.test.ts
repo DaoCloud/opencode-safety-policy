@@ -159,7 +159,7 @@ describe.skipIf(!E2E_ENABLED)("tui", () => {
     await tui.type(directive("shell", { command: `rm ${file}` }))
     tui.press(ENTER)
     await tui.waitFor("Permission required")
-    await tui.waitFor("[safety-policy:rm-local] 删除本机文件需要确认")
+    await tui.waitForToast("[safety-policy:rm-local] 删除本机文件需要确认")
     tui.press(ENTER)
     const ran = `${STUB_MARK} rm ${file}`
     const deadline = Date.now() + 30_000
