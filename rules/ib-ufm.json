@@ -179,6 +179,23 @@
         "match": ["ufm_ha_cluster failover", "ufm_ha_cluster takeover"],
         "ignore": ["ufm_ha_cluster status", "echo ufm_ha_cluster failover"]
       }
+    },
+    {
+      "id": "ufm-rest-write",
+      "severity": "high",
+      "reason": "禁止通过 UFM REST API 修改 InfiniBand fabric（PKey、端口、设备动作等）",
+      "http": {
+        "methods": ["POST", "PUT", "PATCH", "DELETE"],
+        "urlPatterns": ["/ufmRest(V\\d+)?/"]
+      },
+      "examples": {
+        "match": [
+          "curl -k -u admin:pw -X POST https://ufm/ufmRest/actions -d '{\"action\":\"reboot\",\"object_ids\":[\"0x1\"]}'",
+          "curl -k -X DELETE https://ufm/ufmRestV2/resources/pkeys/0x7fff",
+          "ssh ufm-host curl -sk -X PUT https://localhost/ufmRestV3/resources/pkeys -d @pkey.json"
+        ],
+        "ignore": ["curl -k -u admin:pw https://ufm/ufmRest/resources/systems", "echo curl -X POST https://ufm/ufmRest/actions"]
+      }
     }
   ]
 }

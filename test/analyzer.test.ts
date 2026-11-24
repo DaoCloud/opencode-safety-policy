@@ -582,6 +582,93 @@ describe("remote commands", () => {
   })
 })
 
+describe("http requests", () => {
+  const protectedEndpoints = { bmcCidrs: ["10.0.0.0/24"], ufmHosts: ["ufm.lab"] }
+  const ENDPOINTS = buildRuleSet({ rules: BUILTIN, protectedEndpoints })
+  const FILES: Record<string, string> = {
+    [`${CWD}/boot.json`]: '{"Boot":{"BootSourceOverrideTarget":"Pxe"}}',
+    [`${CWD}/plain.json`]: '{"AssetTag":"x"}',
+    [`${CWD}/post.cfg`]: "url = https://10.0.0.7/api/x\nrequest = POST\n",
+    [`${CWD}/rf.py`]: 'requests.patch(BMC + "/redfish/v1/Systems/1", json={"BootSourceOverrideTarget": "Pxe"})\n',
+  }
+  const reads: string[] = []
+  const readFile = (file: string) => {
+    reads.push(file)
+    if (Object.hasOwn(FILES, file)) return FILES[file]!
+    throw Object.assign(new Error(`no such file: ${file}`), { code: "ENOENT" })
+  }
+  const check = (command: string, mode: "strict" | "relaxed" = "strict") =>
+    verdict(command, { readFile, rules: ENDPOINTS, mode })
+  const PATCH = "curl -X PATCH https://bmc1/redfish/v1/Systems/1"
+
+  test.each([
+    ["curl -X POST https://bmc1/redfish/v1/Systems/1/Actions/ComputerSystem.Reset", "redfish-power-reset"],
+    [`${PATCH} -d @boot.json`, "redfish-boot-override"],
+    [`${PATCH} -d @missing.json`, "redfish-boot-override"],
+    [`cat boot.json | ${PATCH} -d @-`, "redfish-boot-override"],
+    ["curl -X POST https://bmc1/redfish/v1/Systems/1/Actions/%43omputerSystem.Reset", "redfish-power-reset"],
+    ["curl -X POST https://bmc1/redfish/v1/x/../Systems/1/Actions/ComputerSystem.Reset", "redfish-power-reset"],
+    ["python3 rf.py", "redfish-boot-override"],
+  ])("%s is denied in every mode", (command, ruleId) => {
+    expect(check(command)).toEqual(["deny", ruleId])
+    expect(check(command, "relaxed")).toEqual(["deny", ruleId])
+  })
+
+  test("a file body is read relative to the working directory", () => {
+    reads.length = 0
+    const result = run(`${PATCH} -d @../plain.json`, { readFile, rules: ENDPOINTS, workdir: "sub" })
+    expect([result.decision, result.ruleId]).toEqual(["deny", "redfish-write"])
+    expect(reads).toEqual([`${CWD}/plain.json`])
+    expect(check(`${PATCH} -d @plain.json`, "relaxed")).toEqual(["ask", "redfish-write"])
+  })
+
+  test("a directory where the body file cannot be read leaves the body unknown", () => {
+    expect(check(`cd sub && ${PATCH} -d @../plain.json`)).toEqual(["deny", "redfish-boot-override"])
+  })
+
+  test.each([
+    "curl -X POST https://10.0.0.9/api",
+    "curl -K post.cfg",
+    "curl -X POST 'http://[::ffff:10.0.0.3]/x'",
+    "curl -d x http://167772161/x",
+    `python3 -c 'requests.post("https://ufm.lab/api/x")'`,
+    "http bmc1/redfish/v1/Systems/1 >/dev/null",
+  ])("protected endpoint write %s is denied in strict and asks in relaxed", (command) => {
+    const ruleId = command.startsWith("http ") ? "redfish-write" : "protected-endpoint-write"
+    expect(check(command)).toEqual(["deny", ruleId])
+    expect(check(command, "relaxed")).toEqual(["ask", ruleId])
+  })
+
+  test.each([
+    "curl -sk https://bmc1/redfish/v1/Systems",
+    "curl https://10.0.0.9/api",
+    "curl -X POST https://10.1.0.9/api",
+    "http -I bmc1/x",
+  ])("%s is allowed", (command) => {
+    expect(check(command)).toEqual(["allow", undefined])
+  })
+
+  test("an unreadable curl config fails closed", () => {
+    const result = run("curl -K nope.cfg https://bmc1/x", { readFile, rules: ENDPOINTS })
+    expect([result.decision, result.ruleId]).toEqual(["deny", "opaque"])
+    expect(result.reason).toContain("curl 配置文件（-K nope.cfg）无法读取")
+    expect(check("curl -K nope.cfg https://bmc1/x", "relaxed")[0]).toBe("ask")
+  })
+
+  test("remote Redfish and UFM queries are read-only", () => {
+    expect(check("ssh jump curl -sk https://bmc1/redfish/v1/Systems")).toEqual(["allow", undefined])
+    expect(check("ssh jump curl -s https://ufm/ufmRestV2/resources/ports")).toEqual(["allow", undefined])
+    const unknown = ["ask", "unknown-remote-command"]
+    expect(check("ssh jump curl -sk -o /tmp/x https://bmc1/redfish/v1/Systems")).toEqual(unknown)
+    expect(check("ssh jump curl https://example.com")).toEqual(unknown)
+    expect(check("ssh jump curl -X POST https://10.0.0.9/x")).toEqual(["deny", "protected-endpoint-write"])
+  })
+
+  test("a remote file body is unknown", () => {
+    expect(check(`ssh jump ${PATCH} -d @plain.json`)).toEqual(["deny", "redfish-boot-override"])
+  })
+})
+
 describe("result", () => {
   test("reports every atom with its context", () => {
     const result = run("ls && ssh node1 'sudo rm /tmp/x'")

@@ -52,6 +52,9 @@ describe("parseOptions", () => {
     [{ extraDeny: { id: "x" } }, '"extraDeny"'],
     [{ protectedEndpoints: { bmcHosts: ["10.0.0.1"] } }, '"protectedEndpoints.bmcHosts"'],
     [{ protectedEndpoints: { ufmHosts: "ufm.internal" } }, '"protectedEndpoints.ufmHosts"'],
+    [{ protectedEndpoints: { bmcCidrs: ["10.0.0.0/33"] } }, '"10.0.0.0/33" is not an IP address'],
+    [{ protectedEndpoints: { ufmHosts: ["ufm.internal:443"] } }, '"ufm.internal:443" is not an IP address'],
+    [{ protectedEndpoints: { nicoHosts: ["https://nico"] } }, '"https://nico" is not an IP address'],
   ])("rejects %j", (raw, problem) => {
     expect(() => parseOptions(raw)).toThrow(ConfigError)
     expect(() => parseOptions(raw)).toThrow(problem)
@@ -64,6 +67,11 @@ describe("createRuleProvider", () => {
     const set = createRuleProvider({ rulesFile: [file], extraDeny: [{ id: "inline-deny", command: "nico-cli" }] }, BUILTIN).get()
     expect(set.severity.map((rule) => rule.rule.id)).toEqual(["builtin-mkfs", "file-rule"])
     expect(set.deny.map((rule) => rule.rule.id)).toEqual(["inline-deny"])
+  })
+
+  test("protectedEndpoints add the protected-endpoint-write rule", () => {
+    const set = createRuleProvider({ protectedEndpoints: { ufmHosts: ["ufm.internal"] } }, BUILTIN).get()
+    expect(set.severity.map((rule) => rule.rule.id)).toEqual(["builtin-mkfs", "protected-endpoint-write"])
   })
 
   test("reuses the rule set until a rules file changes", () => {

@@ -14,7 +14,8 @@
  * interpreter (`bash < x.sh`, `python3 < x.py`), or passed to one as the script (`bash x.sh`, `python3 x.py`), yields a
  * marker atom with `scriptFile`; the caller reads the file and walks its content with `unwrapScriptFile` or
  * `unwrapCode`. Interpreter inline code (`python3 -c`, `node -e`) is prescanned for shell commands (design 3.1
- * Stage 3.5); the atoms found in interpreter code carry `prescan`.
+ * Stage 3.5); the atoms found in interpreter code carry `prescan`, and its endpoint literals become one atom with
+ * `http`.
  */
 
 import path from "node:path"
@@ -29,7 +30,8 @@ import {
   type OpaqueReason,
   type Script,
 } from "./tokenizer"
-import { scanCode, type Language } from "./script-scanner"
+import type { HttpRequest } from "./http-extractor"
+import { scanCode, scanHttp, type Language } from "./script-scanner"
 
 export interface Atom {
   name: string
@@ -62,6 +64,10 @@ export interface Atom {
   scriptFile?: ScriptFile
   /** Found in interpreter code by the prescan, so only rules judge it. */
   prescan?: boolean
+  /** HTTP requests to endpoint literals of interpreter code (`name` is `""`). */
+  http?: HttpRequest[]
+  /** Stdin is a pipe or a file, not inline text. */
+  piped?: true
 }
 
 /** A local file run as a script: on stdin, or as the script argument of a shell or an interpreter. */
@@ -238,6 +244,8 @@ function walkCode(code: string, language: Language, context: Context, owner: Com
   if (code.length > walk.chars) return stop(walk, atomBase(context, owner))
   walk.chars -= code.length
   const prescan: Context = { ...context, prescan: true }
+  const http = scanHttp(code, language)
+  if (http.length) emit(walk, { ...atomBase(prescan, owner), http })
   for (const command of scanCode(code, language)) {
     if (command.length > walk.chars) return stop(walk, atomBase(context, owner))
     walk.chars -= command.length
@@ -434,6 +442,7 @@ function atomBase(context: Context, command: Command): Atom {
   }
   if (context.targetHost !== undefined) atom.targetHost = context.targetHost
   if (context.stdin !== undefined) atom.stdin = context.stdin
+  if (context.piped) atom.piped = true
   if (context.chdir) atom.chdir = context.chdir
   if (context.prescan) atom.prescan = true
   return atom

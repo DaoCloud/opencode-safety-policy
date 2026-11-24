@@ -6,10 +6,13 @@
  * 2. an `extraDeny` rule or a `critical` rule denies;
  * 3. an `extraAllow` rule exempts the atom from the remaining rules;
  * 4. `extraAsk` rules ask, and `high` / `medium` rules follow the 5.1 matrix.
+ * With `protectedEndpoints`, the built-in `high` rule `protected-endpoint-write` matches any HTTP request to them
+ * that is not a known GET / HEAD.
  * Verdicts are combined as deny > ask > allow; on a tie the first rule wins.
  */
 
-import type { Decision, InlineRule, Mode, Rule, Severity } from "../types"
+import { endpointMatcher } from "../http-extractor"
+import type { Decision, InlineRule, Mode, ProtectedEndpoints, Rule, Severity } from "../types"
 import { RuleError, validateInlineRule } from "./loader"
 import { compileRule, matchRule, type CompiledRule, type MatchInput } from "./matcher"
 
@@ -32,6 +35,7 @@ export interface RuleSources {
   extraDeny?: unknown[]
   extraAsk?: unknown[]
   extraAllow?: unknown[]
+  protectedEndpoints?: ProtectedEndpoints
 }
 
 const MATRIX: Record<Mode, Record<Severity, Decision>> = {
@@ -61,8 +65,19 @@ export function buildRuleSet(sources: RuleSources): RuleSet {
       const rule = validateInlineRule(raw, source)
       return add({ ...rule, reason: rule.reason ?? `${key} rule "${rule.id}"` }, source)
     })
+  const severity = sources.rules.map((rule) => add(rule, "rules"))
+  const hosts = endpointMatcher(sources.protectedEndpoints)
+  if (hosts) {
+    const rule: Rule = {
+      id: "protected-endpoint-write",
+      severity: "high",
+      reason: "向受保护的管理端点（protectedEndpoints）发送写请求",
+      http: {},
+    }
+    severity.push({ ...add(rule, "options.protectedEndpoints"), http: { hosts, write: true } })
+  }
   return {
-    severity: sources.rules.map((rule) => add(rule, "rules")),
+    severity,
     deny: inline("extraDeny"),
     ask: inline("extraAsk"),
     allow: inline("extraAllow"),

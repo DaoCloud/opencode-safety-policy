@@ -120,6 +120,130 @@
         ],
         "ignore": ["redfishtool -r bmc1 raw GET /redfish/v1/Systems", "echo redfishtool raw POST /redfish/v1"]
       }
+    },
+    {
+      "id": "redfish-power-reset",
+      "severity": "critical",
+      "reason": "禁止通过 Redfish 对主机或机箱断电、复位或重启",
+      "http": {
+        "methods": ["POST", "PUT", "PATCH", "DELETE"],
+        "urlPatterns": ["/redfish/v1/.*Actions/(ComputerSystem|Chassis)\\.Reset"]
+      },
+      "examples": {
+        "match": [
+          "curl -k -u admin:pw -X POST https://10.0.0.5/redfish/v1/Systems/1/Actions/ComputerSystem.Reset -d '{\"ResetType\":\"ForceOff\"}'",
+          "ssh jump curl -sk -d '{\"ResetType\":\"ForceRestart\"}' https://bmc1/redfish/v1/Systems/System.Embedded.1/Actions/ComputerSystem.Reset",
+          "http POST bmc1/redfish/v1/Chassis/1/Actions/Chassis.Reset ResetType=PowerCycle",
+          "python3 -c 'import requests; requests.post(\"https://bmc1/redfish/v1/Systems/1/Actions/ComputerSystem.Reset\", json=body)'"
+        ],
+        "ignore": [
+          "curl -sk https://bmc1/redfish/v1/Systems/1",
+          "curl -sk https://bmc1/redfish/v1/Systems/1/ResetActionInfo",
+          "echo curl -X POST https://bmc1/redfish/v1/Systems/1/Actions/ComputerSystem.Reset"
+        ]
+      }
+    },
+    {
+      "id": "redfish-virtual-media",
+      "severity": "critical",
+      "reason": "禁止通过 Redfish 挂载、弹出或修改虚拟介质（可触发重装）",
+      "http": {
+        "methods": ["POST", "PUT", "PATCH", "DELETE"],
+        "urlPatterns": ["/redfish/v1/.*(VirtualMedia\\.(InsertMedia|EjectMedia)|/VirtualMedia/[^/?#]+/?($|[?#]))"]
+      },
+      "examples": {
+        "match": [
+          "curl -k -X POST https://bmc1/redfish/v1/Managers/1/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia -d '{\"Image\":\"http://repo/os.iso\"}'",
+          "curl -k -X PATCH https://bmc1/redfish/v1/Managers/1/VirtualMedia/CD1 -d '{\"Image\":\"http://repo/os.iso\",\"Inserted\":true}'",
+          "wget -qO- --method=POST --body-data '{}' https://bmc1/redfish/v1/Systems/1/VirtualMedia/1/Actions/VirtualMedia.EjectMedia"
+        ],
+        "ignore": [
+          "curl -k https://bmc1/redfish/v1/Managers/1/VirtualMedia/CD1",
+          "curl -k -X POST https://bmc1/redfish/v1/Managers/1/VirtualMedia/CD1/Actions/Oem.Info",
+          "echo curl -X POST https://bmc1/redfish/v1/Managers/1/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia"
+        ]
+      }
+    },
+    {
+      "id": "redfish-boot-override",
+      "severity": "critical",
+      "reason": "禁止通过 Redfish 修改主机的一次性或持久启动设备（可触发重装）",
+      "http": {
+        "methods": ["PATCH", "PUT", "POST"],
+        "urlPatterns": ["/redfish/v1/Systems/"],
+        "bodyPatterns": ["BootSourceOverride"]
+      },
+      "examples": {
+        "match": [
+          "curl -k -X PATCH https://bmc1/redfish/v1/Systems/1 -d '{\"Boot\":{\"BootSourceOverrideTarget\":\"Pxe\"}}'",
+          "curl -k -X PATCH https://bmc1/redfish/v1/Systems/1 -d @boot.json",
+          "http PATCH bmc1/redfish/v1/Systems/1 Boot:='{\"BootSourceOverrideTarget\":\"Cd\"}'"
+        ],
+        "ignore": [
+          "curl -k -X PATCH https://bmc1/redfish/v1/Systems/1 -d '{\"AssetTag\":\"rack1\"}'",
+          "curl -k 'https://bmc1/redfish/v1/Systems/1?$select=Boot/BootSourceOverrideTarget'",
+          "echo curl -X PATCH https://bmc1/redfish/v1/Systems/1 -d BootSourceOverrideTarget"
+        ]
+      }
+    },
+    {
+      "id": "redfish-bmc-reset",
+      "severity": "critical",
+      "reason": "禁止通过 Redfish 复位 BMC 或将 BMC 恢复出厂设置",
+      "http": {
+        "methods": ["POST", "PUT", "PATCH", "DELETE"],
+        "urlPatterns": ["/redfish/v1/.*Actions/Manager\\.(Reset|ResetToDefaults)"]
+      },
+      "examples": {
+        "match": [
+          "curl -k -X POST https://bmc1/redfish/v1/Managers/1/Actions/Manager.Reset -d '{\"ResetType\":\"GracefulRestart\"}'",
+          "curl -k -X POST https://bmc1/redfish/v1/Managers/iDRAC.Embedded.1/Actions/Manager.ResetToDefaults -d '{\"ResetType\":\"ResetAll\"}'"
+        ],
+        "ignore": [
+          "curl -k https://bmc1/redfish/v1/Managers/1",
+          "echo curl -X POST https://bmc1/redfish/v1/Managers/1/Actions/Manager.Reset"
+        ]
+      }
+    },
+    {
+      "id": "redfish-firmware-update",
+      "severity": "critical",
+      "reason": "禁止通过 Redfish 更新或修改固件更新服务",
+      "http": {
+        "methods": ["POST", "PUT", "PATCH", "DELETE"],
+        "urlPatterns": ["/redfish/v1/UpdateService"]
+      },
+      "examples": {
+        "match": [
+          "curl -k -X POST https://bmc1/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate -d '{\"ImageURI\":\"http://repo/bios.bin\"}'",
+          "curl -k -F UpdateFile=@bios.bin https://bmc1/redfish/v1/UpdateService/upload"
+        ],
+        "ignore": [
+          "curl -k https://bmc1/redfish/v1/UpdateService/FirmwareInventory",
+          "echo curl -X POST https://bmc1/redfish/v1/UpdateService/Actions/UpdateService.SimpleUpdate"
+        ]
+      }
+    },
+    {
+      "id": "redfish-write",
+      "severity": "high",
+      "reason": "禁止通过 Redfish 修改 BMC 或主机配置（登录会话除外）",
+      "http": {
+        "methods": ["POST", "PUT", "PATCH", "DELETE"],
+        "urlPatterns": ["/redfish/v1/(?!SessionService/Sessions(/|$|\\?))"]
+      },
+      "examples": {
+        "match": [
+          "curl -k -X PATCH https://bmc1/redfish/v1/AccountService/Accounts/3 -d '{\"Password\":\"x\"}'",
+          "curl -k -X DELETE https://bmc1/redfish/v1/Systems/1/LogServices/SEL/Entries/1",
+          "curl -k -X \"$METHOD\" https://bmc1/redfish/v1/Systems/1"
+        ],
+        "ignore": [
+          "curl -k -u admin:pw https://bmc1/redfish/v1/Systems/1",
+          "curl -k -X POST https://bmc1/redfish/v1/SessionService/Sessions -d '{\"UserName\":\"admin\",\"Password\":\"x\"}'",
+          "echo curl -X DELETE https://bmc1/redfish/v1/Systems/1"
+        ]
+      }
     }
   ]
 }

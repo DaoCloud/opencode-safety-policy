@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { buildRuleSet, combine, decide, severityDecision } from "../src/rules"
 import { loadBuiltinRules, loadRuleFile, RuleError, validateInlineRule, validateRule } from "../src/rules/loader"
+import type { HttpRequest } from "../src/http-extractor"
 import { compileRule, matchRule } from "../src/rules/matcher"
 import type { InlineRule, Mode, Rule, Severity } from "../src/types"
 
@@ -96,6 +97,24 @@ describe("buildRuleSet", () => {
   test("inline rules get a default reason", () => {
     const set = buildRuleSet({ rules: [], extraAsk: [{ id: "a", command: "rm" }] })
     expect(decide(input("rm x"), set, "strict")).toEqual({ decision: "ask", ruleId: "a", reason: 'extraAsk rule "a"' })
+  })
+
+  test("protectedEndpoints add a high rule for requests to them that are not a known GET / HEAD", () => {
+    const set = buildRuleSet({ rules: [], protectedEndpoints: { bmcCidrs: ["10.0.0.0/24"], ufmHosts: ["ufm.lab"] } })
+    const send = (method: string | undefined, host: string) => {
+      const http = [{ urls: [`http://${host}/x`], host, ...(method && { method }) }]
+      return decide({ argv: [], isRemote: false, http }, set, "strict").ruleId
+    }
+    expect(send("POST", "10.0.0.9")).toBe("protected-endpoint-write")
+    expect(send(undefined, "ufm.lab")).toBe("protected-endpoint-write")
+    expect(send("GET", "10.0.0.9")).toBeUndefined()
+    expect(send("HEAD", "ufm.lab")).toBeUndefined()
+    expect(send("POST", "10.0.1.9")).toBeUndefined()
+    expect(buildRuleSet({ rules: [], protectedEndpoints: {} }).severity).toEqual([])
+    const duplicate = rule({ id: "protected-endpoint-write", command: "x" })
+    expect(() => buildRuleSet({ rules: [duplicate], protectedEndpoints: { ufmHosts: ["u"] } })).toThrow(
+      'duplicate rule id "protected-endpoint-write"',
+    )
   })
 })
 
@@ -203,8 +222,24 @@ describe("matchRule", () => {
     expect(matches({ command: "rm" }, "rm x", true)).toBe(true)
   })
 
-  test("http-only rules do not match commands", () => {
+  test("http rules match one request on every part, and http-only rules ignore the command line", () => {
+    const request = (method: string | undefined, url: string, body?: string): HttpRequest => ({
+      urls: [url],
+      ...(method && { method }),
+      ...(body !== undefined && { body }),
+    })
+    const http = (fields: Partial<Rule>, line: string, requests: HttpRequest[]) =>
+      matchRule(compileRule(rule({ id: "r", ...fields })), { ...input(line), http: requests })
+    const boot = { http: { methods: ["patch"], urlPatterns: ["/redfish/v1/systems/"], bodyPatterns: ["bootsource"] } }
+    const url = "https://bmc/redfish/v1/Systems/1"
+    expect(http(boot, "curl", [request("PATCH", url, '{"BootSourceOverrideTarget":"Pxe"}')])).toBe(true)
+    expect(http(boot, "curl", [request(undefined, url, undefined)])).toBe(true)
+    expect(http(boot, "curl", [request("GET", url, "BootSource"), request("PATCH", url, "{}")])).toBe(false)
+    expect(http(boot, "curl", [request("PATCH", "https://bmc/redfish/v1/Managers/1", "BootSource")])).toBe(false)
+    expect(http(boot, "curl", [])).toBe(false)
     expect(matches({ http: { methods: ["POST"] } }, "curl -X POST x")).toBe(false)
+    expect(http({ command: "wget", http: { methods: ["POST"] } }, "curl", [request("POST", url)])).toBe(false)
+    expect(http({ pattern: "-k", http: { methods: ["POST"] } }, "curl -k", [request("POST", url)])).toBe(true)
   })
 })
 

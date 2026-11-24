@@ -20,13 +20,17 @@
  * - a script that an earlier atom of the command writes (`cat > x.sh <<EOF ... EOF; bash x.sh`, `./x.sh`,
  *   `source x.sh`) fails closed without reading the file, and the written text, when it is known, is judged where
  *   the script runs (design 3.1 Stage 2);
- * - atoms found by the interpreter code prescan are judged by the rules only (design 3.1 Stage 3.5).
+ * - atoms found by the interpreter code prescan are judged by the rules only (design 3.1 Stage 3.5);
+ * - `curl`, `wget` and HTTPie requests are matched by `http` rules (design 3.1 Stage 3.5). Their `@file` bodies and
+ *   config files are read in each candidate directory; a config file that cannot be read fails closed. A remote
+ *   GET / HEAD of a Redfish or UFM path that writes no local file is read-only.
  * Verdicts are combined as deny > ask > allow.
  */
 
 import { closeSync, constants, fstatSync, openSync, readSync, statSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { extractHttp, isReadOnlyQuery, type HttpExtraction, type HttpSources } from "./http-extractor"
 import { effectiveCwd, expandPathArgs, resolveCanonicalPath } from "./path-util"
 import { ALLOW, combine, decide, type RuleSet, type Verdict } from "./rules"
 import type { MatchInput } from "./rules/matcher"
@@ -80,6 +84,7 @@ export interface Analysis extends Verdict {
 interface Candidate {
   input: MatchInput
   guessed: boolean
+  http?: HttpExtraction
 }
 
 /** A directory, or `null` when it cannot be determined statically. */
@@ -176,12 +181,17 @@ function expandAtoms(atoms: Atom[], dirs: Dir[], scope: Scope): Entry[] {
     const atomDirs = (atom.chdir ?? []).reduce(changeDir(home), dirs)
     if (atom.isRemote) {
       if (!atom.prescan) recordWrites(atom, [...dirs, ...atomDirs], scope)
-      return [{ atom, candidates: [{ input: { ...base, argv: atom.argv }, guessed: false }], dirs: known(dirs) }]
+      const candidate = withHttp({ input: { ...base, argv: atom.argv }, guessed: false }, atom)
+      return [{ atom, candidates: [candidate], dirs: known(dirs) }]
     }
-    const at = (dir: string, guessed: boolean): Candidate => ({
-      input: { ...base, argv: expandPathArgs(atom.argv, atom.expanded, dir, home).argv },
-      guessed,
-    })
+    const at = (dir: string, guessed: boolean): Candidate => {
+      const input = { ...base, argv: expandPathArgs(atom.argv, atom.expanded, dir, home).argv }
+      const read = (file: string) => {
+        const text = scope.read(resolveCanonicalPath(file, dir, home))
+        return text instanceof Error ? undefined : text
+      }
+      return withHttp({ input, guessed }, atom, read)
+    }
     const candidates = atomDirs.flatMap((dir) => (dir === null ? [at(PLACEHOLDER, false), at("/", true)] : [at(dir, false)]))
     const entries: Entry[] = [{ atom, candidates, dirs: known(atomDirs) }]
     if (!atom.prescan) {
@@ -192,6 +202,15 @@ function expandAtoms(atoms: Atom[], dirs: Dir[], scope: Scope): Entry[] {
     if (target !== undefined) addDirs(dirs, changeDir(home)(atomDirs, target))
     return entries
   })
+}
+
+/** Adds the HTTP requests of `atom`; files named by the command are read with `read`. */
+function withHttp(candidate: Candidate, atom: Atom, read?: (file: string) => string | undefined): Candidate {
+  const sources: HttpSources = { stdin: atom.stdin ?? (atom.piped ? undefined : "") }
+  if (read) sources.read = read
+  const http = atom.http ? { requests: atom.http } : extractHttp(atom.argv, atom.expanded, sources)
+  if (!http) return candidate
+  return { ...candidate, input: { ...candidate.input, http: http.requests }, http }
 }
 
 function known(dirs: Dir[]): string[] {
@@ -425,10 +444,14 @@ function judge(atom: Atom, candidates: Candidate[], input: AnalyzeInput): Verdic
   }
   if (!atom.prescan && isDynamicName(atom.argv[0] ?? "", atom.expanded[0] ?? false))
     verdicts.push(failClosed(mode, "dynamic-command", `命令名在运行时才能确定（${atom.argv[0]}），无法静态判定`))
+  const opaque = candidates[0]?.http?.opaque
+  if (!atom.prescan && opaque !== undefined && candidates.every((candidate) => candidate.http?.opaque !== undefined))
+    verdicts.push(failClosed(mode, "opaque", `命令无法静态分析：${opaque}`))
   const verdict = combine([...lowered, ...verdicts])
   if (atom.prescan) return verdict.reason === undefined ? verdict : { ...verdict, reason: `${verdict.reason}（解释器代码预扫）` }
   if (!atom.isRemote || verdict.decision !== "allow" || verdict.ruleId !== undefined) return verdict
-  if ((!atom.argv.length || isReadOnly(atom.argv, input.readOnly)) && !writesFile(atom.command)) return ALLOW
+  const readOnly = !atom.argv.length || isReadOnly(atom.argv, input.readOnly) || isReadOnlyQuery(candidates[0]?.http)
+  if (readOnly && !writesFile(atom.command)) return ALLOW
   const decision = UNKNOWN_REMOTE[mode]
   if (decision === "allow") return ALLOW
   return { decision, ruleId: "unknown-remote-command", reason: `远端命令不在只读白名单中（${atom.targetHost ?? "远端"}）` }

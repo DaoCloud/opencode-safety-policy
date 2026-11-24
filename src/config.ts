@@ -8,6 +8,7 @@
 
 import { statSync } from "node:fs"
 import path from "node:path"
+import { parseEndpoint } from "./http-extractor"
 import { buildRuleSet, type RuleSet } from "./rules"
 import { loadBuiltinRules, loadRuleFile, RuleError } from "./rules/loader"
 import type { Mode, PluginOptions, Rule } from "./types"
@@ -56,6 +57,9 @@ export function parseOptions(raw: unknown): PluginOptions {
     for (const key of Object.keys(endpoints)) {
       if (!ENDPOINT_KEYS.includes(key)) fail(`unknown field "protectedEndpoints.${key}"`)
       if (!isTexts(endpoints[key])) fail(`"protectedEndpoints.${key}" must be an array of non-empty strings`)
+      for (const entry of endpoints[key] as string[])
+        if (!parseEndpoint(entry))
+          fail(`"protectedEndpoints.${key}": "${entry}" is not an IP address, a CIDR block or a host name`)
     }
   }
   return raw as PluginOptions
@@ -75,7 +79,13 @@ export function createRuleProvider(options: PluginOptions, builtin: Rule[] = loa
       const next = files.map(fileStamp).join("|")
       if (set && next === stamp) return set
       const rules = [...builtin, ...files.flatMap((file) => loadRuleFile(file))]
-      set = buildRuleSet({ rules, extraDeny: options.extraDeny, extraAsk: options.extraAsk, extraAllow: options.extraAllow })
+      set = buildRuleSet({
+        rules,
+        extraDeny: options.extraDeny,
+        extraAsk: options.extraAsk,
+        extraAllow: options.extraAllow,
+        protectedEndpoints: options.protectedEndpoints,
+      })
       stamp = next
       return set
     },

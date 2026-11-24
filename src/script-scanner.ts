@@ -6,7 +6,15 @@
  * (`"rm", ["-rf", "/data"]`) is returned as a shell command. Calls of file deletion APIs with literal paths
  * (`shutil.rmtree("/data")`) are returned as the equivalent `rm` command. Only literals are used: values built at
  * run time are not seen, and an interpolation (`f"{d}"`, `"#{d}"`, `` `${d}` ``) becomes a shell variable.
+ *
+ * Endpoint literals (a URL with `://`, a Redfish or UFM path, a host name or an IP address) are returned as HTTP
+ * requests with the whole code as the body. A literal that is the first argument of a `post` / `put` / `patch` /
+ * `delete` call has that method. Otherwise the method is unknown when the code has another write action (a call
+ * with a computed URL, `requests.request("POST", u)`, `Net::HTTP::Post`, `method: "PATCH"`) or the URL has
+ * `/Actions/`, and GET when it has none.
  */
+
+import { request, type HttpRequest } from "./http-extractor"
 
 export type Language = "python" | "perl" | "ruby" | "node"
 
@@ -55,6 +63,10 @@ const DELETE_APIS: Record<Language, Record<string, string>> = {
   },
   node: { rm: "rm -rf", rmSync: "rm -rf", rmdir: "rm -rf", rmdirSync: "rm -rf", unlink: "rm", unlinkSync: "rm" },
 }
+const WRITE_METHODS = new Set(["post", "put", "patch", "delete"])
+const WRITE_SEGMENT = /^(?:Post|Put|Patch|Delete|POST|PUT|PATCH|DELETE)$/
+const HOST_LITERAL = /^[\w-]+(?:\.[\w-]+)+(?::\d+)?$/
+const IPV6_LITERAL = /^\[?[0-9a-f.]*:[0-9a-f.]*:[0-9a-f:.]*\]?$/i
 const NODE_RECEIVER = /^(?:(?:fs|fsp|promises)\.)*/
 const PERL_PACKAGE = /^(?:\w+::)*/
 const PAIRS: Record<string, string> = { "(": ")", "[": "]", "{": "}", "<": ">" }
@@ -112,6 +124,40 @@ export function scanCode(code: string, language: Language): string[] {
     }
   }
   return commands
+}
+
+/** HTTP requests to the endpoint literals of `code`. */
+export function scanHttp(code: string, language: Language): HttpRequest[] {
+  const tokens = lex(code, language)
+  const pinned = new Map<number, string>()
+  let unpinned = false
+  for (let k = 0; k < tokens.length; k++) {
+    const token = tokens[k]!
+    if (token.kind === "string" && WRITE_METHODS.has(token.value.toLowerCase())) unpinned = true
+    if (token.kind !== "word") continue
+    const segments = token.value.split(/\.|::/)
+    const last = segments[segments.length - 1]!
+    if (segments.some((segment) => WRITE_SEGMENT.test(segment))) unpinned = true
+    if (!WRITE_METHODS.has(last)) continue
+    const first = tokens[k + 2]
+    const end = tokens[k + 3]
+    const literal = first?.kind === "string" && !/[$`]/.test(first.value)
+    if (isPunct(tokens[k + 1], "(") && literal && (isPunct(end, ",") || isPunct(end, ")")))
+      pinned.set(k + 2, last.toUpperCase())
+    else unpinned = true
+  }
+  const requests: HttpRequest[] = []
+  tokens.forEach((token, k) => {
+    if (token.kind !== "string") return
+    const url = token.value
+    const ipv6 = IPV6_LITERAL.test(url)
+    const endpoint =
+      url.includes("://") || (url.startsWith("/") && /redfish|ufmrest/i.test(url)) || HOST_LITERAL.test(url) || ipv6
+    if (!endpoint || /\s/.test(url)) return
+    const method = pinned.get(k) ?? (unpinned || /\/actions\//i.test(url) ? undefined : "GET")
+    requests.push(request(method, url, code, ipv6 && !url.startsWith("[") ? `[${url}]` : url))
+  })
+  return requests
 }
 
 function isPunct(token: Token | undefined, value: string) {

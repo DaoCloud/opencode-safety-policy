@@ -175,7 +175,8 @@ export class Harness {
   private server?: { proc: Subprocess; url: string; auth: string; log: string[] }
   private seq = 0
 
-  constructor() {
+  /** `options` become the plugin's `plugins[].options`. */
+  constructor(private readonly options?: Record<string, unknown>) {
     for (const dir of ["home", "stubbin", "xdg/config", "xdg/data", "xdg/state", "xdg/cache"])
       mkdirSync(path.join(this.root, dir), { recursive: true })
     for (const name of STUBS) {
@@ -202,7 +203,7 @@ export class Harness {
       providers: {
         mock: { name: "Mock", package: "@opencode/ai/providers/openai-compatible", settings, models: { m1: model } },
       },
-      plugins: [{ package: REPO }],
+      plugins: [{ package: REPO, ...(this.options && { options: this.options }) }],
     }
   }
 

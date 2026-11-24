@@ -1,4 +1,4 @@
-/** P1-1, P1-2 and P1-5 analyzer cases through a real `opencode serve`, with real files for the script inputs. */
+/** P1-1, P1-2, P1-3 and P1-5 analyzer cases through a real `opencode serve`, with real files for the script inputs. */
 
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import path from "node:path"
@@ -10,13 +10,16 @@ let h: Harness
 
 beforeAll(async () => {
   if (!E2E_ENABLED) return
-  h = new Harness()
+  // Nothing listens on 127.0.0.2:9, so a request that runs fails at once.
+  h = new Harness({ protectedEndpoints: { bmcCidrs: ["127.0.0.2/32"] } })
   h.write("danger.sh", "rm -rf /data\n")
   h.write("ok.sh", "echo SCRIPT-OK\n")
   h.write("body-cd.sh", "cd /\nrm -rf etc\n")
   h.write("sub/w.sh", "rm -rf /data\n")
   h.write("danger.py", "import shutil\nshutil.rmtree('/data')\n")
   h.write("ok.py", "print('PY-OK')\n")
+  h.write("boot.json", '{"Boot":{"BootSourceOverrideTarget":"Pxe"}}')
+  h.write("post.cfg", "url = http://127.0.0.2:9/x\nrequest = POST\n")
   await h.start()
 })
 
@@ -64,6 +67,13 @@ const denied: [string, string][] = [
   [`node -e 'require("fs").rmSync("/data", { recursive: true })'`, "rm-system-path"],
   ["cat > run.sh <<'EOF'\necho hi\nEOF\nbash run.sh", "opaque"],
   ["python3 missing.py", "opaque"],
+  // P1-3: HTTP writes to Redfish, UFM and protected endpoints, with bodies and curl configs read from real files.
+  ["curl -X PATCH -d {} https://bmc1/redfish/v1/Managers/1/VirtualMedia/CD", "redfish-virtual-media"],
+  ["curl -X PATCH https://bmc1/redfish/v1/Systems/1 -d @boot.json", "redfish-boot-override"],
+  ["curl -X POST http://127.0.0.2:9/x", "protected-endpoint-write"],
+  ["curl -K post.cfg", "protected-endpoint-write"],
+  ["curl -K missing.cfg https://bmc1/x", "opaque"],
+  [`python3 -c 'import requests; requests.post("http://127.0.0.2:9/x")'`, "protected-endpoint-write"],
 ]
 
 describe.skipIf(!E2E_ENABLED)("strict", () => {
@@ -88,6 +98,12 @@ describe.skipIf(!E2E_ENABLED)("strict", () => {
     const call = await h.shell("python3 ok.py")
     expectAsked(call, "script-file")
     expect(call.result).toContain("PY-OK")
+  })
+
+  test("allows a read from a protected endpoint", async () => {
+    const call = await h.shell("curl -sS http://127.0.0.2:9/redfish/v1/Systems; echo CURL-RAN")
+    expectAllowed(call)
+    expect(call.result).toContain("CURL-RAN")
   })
 })
 
@@ -124,5 +140,16 @@ describe.skipIf(!E2E_ENABLED)("relaxed", () => {
 
   test("still denies a critical hit in a script written by the same command", async () => {
     expectDenied(await h.shell("cat > run.sh <<'EOF'\nrm -rf /data\nEOF\nbash run.sh"), "rm-system-path")
+  })
+
+  test("asks for a protected endpoint write", async () => {
+    const call = await h.shell("curl -sS -X POST http://127.0.0.2:9/x; echo CURL-RAN")
+    expectAsked(call, "protected-endpoint-write")
+    expect(call.result).toContain("CURL-RAN")
+  })
+
+  test("still denies a critical Redfish action", async () => {
+    const call = await h.shell("curl -X POST https://bmc1/redfish/v1/Systems/1/Actions/ComputerSystem.Reset")
+    expectDenied(call, "redfish-power-reset")
   })
 })

@@ -131,6 +131,62 @@ const LEADING_NUMBER = new RegExp(`^${FLOAT}`)
 // getopt takes an optional argument only when it is attached (`-i{}`, `--replace={}`).
 const ATTACHED = /(?!)/
 
+// HTTP client long options (curl 8.9, wget 1.24, HTTPie 3).
+const CURL_VALUE = `abstract-unix-socket alt-svc aws-sigv4 cacert capath cert cert-type ciphers config connect-timeout
+  connect-to continue-at cookie cookie-jar create-file-mode crlfile curves data data-ascii data-binary data-raw
+  data-urlencode delegation dns-interface dns-ipv4-addr dns-ipv6-addr dns-servers doh-url dump-header ech egd-file
+  engine etag-compare etag-save expect100-timeout form form-string ftp-account ftp-alternative-to-user ftp-method
+  ftp-port ftp-ssl-ccc-mode happy-eyeballs-timeout-ms haproxy-clientip header help hostpubmd5 hostpubsha256 hsts
+  interface ip-tos ipfs-gateway json keepalive-cnt keepalive-time key key-type knownhosts krb libcurl limit-rate
+  local-port login-options mail-auth mail-from mail-rcpt max-filesize max-redirs max-time netrc-file noproxy
+  oauth2-bearer output output-dir parallel-max pass pinnedpubkey preproxy proto proto-default proto-redir proxy
+  proxy-cacert proxy-capath proxy-cert proxy-cert-type proxy-ciphers proxy-crlfile proxy-header proxy-key
+  proxy-key-type proxy-pass proxy-pinnedpubkey proxy-service-name proxy-tls13-ciphers proxy-tlsauthtype
+  proxy-tlspassword proxy-tlsuser proxy-user proxy1.0 pubkey quote random-file range rate referer request
+  request-target resolve retry retry-delay retry-max-time sasl-authzid service-name sigalgs socks4 socks4a socks5
+  socks5-gssapi-service socks5-hostname speed-limit speed-time ssl-sessions stderr telnet-option tftp-blksize
+  time-cond tls-max tls13-ciphers tlsauthtype tlspassword tlsuser trace trace-ascii trace-config unix-socket
+  upload-file upload-flags url url-query user user-agent variable vlan-priority write-out`.split(/\s+/)
+const CURL_FLAG = `anyauth append basic ca-native cert-status compressed compressed-ssh create-dirs crlf digest
+  disable disable-eprt disable-epsv disallow-username-in-url doh-cert-status doh-insecure fail fail-early
+  fail-with-body false-start form-escape ftp-create-dirs ftp-pasv ftp-pret ftp-skip-pasv-ip ftp-ssl-ccc
+  ftp-ssl-control get globoff haproxy-protocol head http0.9 http1.0 http1.1 http2 http2-prior-knowledge http3
+  http3-only ignore-content-length include insecure ipv4 ipv6 junk-session-cookies list-only location location-trusted
+  mail-rcpt-allowfails manual metalink mptcp negotiate netrc netrc-optional next no-alpn no-buffer no-clobber
+  no-keepalive no-npn no-progress-meter no-sessionid ntlm ntlm-wb parallel parallel-immediate path-as-is post301
+  post302 post303 progress-bar proxy-anyauth proxy-basic proxy-ca-native proxy-digest proxy-http2 proxy-insecure
+  proxy-negotiate proxy-ntlm proxy-ssl-allow-beast proxy-ssl-auto-client-cert proxy-tlsv1 proxytunnel raw
+  remote-header-name remote-name remote-name-all remote-time remove-on-error retry-all-errors retry-connrefused
+  sasl-ir show-error silent socks5-basic socks5-gssapi socks5-gssapi-nec ssl ssl-allow-beast ssl-auto-client-cert
+  ssl-no-revoke ssl-reqd ssl-revoke-best-effort sslv2 sslv3 styled-output suppress-connect-headers tcp-fastopen
+  tcp-nodelay tftp-no-options tlsv1 tlsv1.0 tlsv1.1 tlsv1.2 tlsv1.3 tr-encoding trace-ids trace-time use-ascii verbose
+  version xattr`.split(/\s+/)
+const WGET_VALUE = `accept accept-regex append-output backups base bind-address body-data body-file ca-certificate
+  ca-directory certificate certificate-type ciphers compression config connect-timeout crl-file cut-dirs default-page
+  directory-prefix dns-timeout domains exclude-directories exclude-domains execute follow-tags ftp-password ftp-user
+  header hsts-file http-password http-user ignore-tags include-directories input-file level limit-rate load-cookies
+  local-encoding max-redirect method output-document output-file password pinnedpubkey post-data post-file
+  prefer-family private-key private-key-type progress proxy-password proxy-user quota random-file read-timeout referer
+  regex-type reject reject-regex rejected-log remote-encoding report-speed restrict-file-names retry-on-http-error
+  save-cookies secure-protocol start-pos timeout tries use-askpass user user-agent wait waitretry warc-dedup warc-file
+  warc-header warc-max-size warc-tempdir`.split(/\s+/)
+const WGET_FLAG = `adjust-extension ask-password auth-no-challenge background backup-converted content-disposition
+  content-on-error continue convert-file-only convert-links debug delete-after follow-ftp force-directories force-html
+  ftps-clear-data-connection ftps-fallback-to-ftp ftps-implicit ftps-resume-ssl help https-only ignore-case
+  ignore-length inet4-only inet6-only keep-session-cookies mirror no-cache no-check-certificate no-clobber no-config
+  no-cookies no-directories no-dns-cache no-glob no-host-directories no-hsts no-http-keep-alive no-if-modified-since
+  no-iri no-netrc no-parent no-passive-ftp no-proxy no-remove-listing no-use-server-timestamps no-verbose
+  no-warc-compression no-warc-digests no-warc-keep-log page-requisites preserve-permissions protocol-directories quiet
+  random-wait recursive relative retr-symlinks retry-connrefused retry-on-host-error save-headers server-response
+  show-progress span-hosts spider strict-comments timestamping trust-server-names unlink verbose version warc-cdx
+  xattr`.split(/\s+/)
+const HTTPIE_VALUE = `boundary raw pretty style response-charset response-mime format-options print output session
+  session-read-only auth auth-type proxy max-redirects max-headers timeout verify ssl ciphers cert cert-key
+  cert-key-pass default-scheme history-print`.split(/\s+/)
+const HTTPIE_FLAG = `json form multipart compress unsorted sorted headers meta body verbose all stream download
+  continue quiet ignore-netrc offline follow check-status path-as-is chunked ignore-stdin help manual version
+  traceback debug`.split(/\s+/)
+
 // Help and version flags of GNU getopt_long tools.
 const GNU = ["help", "version"]
 
@@ -435,6 +491,10 @@ export const OPTION_SPECS = {
     flags: PARALLEL_FLAG,
     getoptLong: true,
   }),
+  // curl 7 accepts a unique prefix of a long name and curl 8 needs the exact name, so prefixes are expanded.
+  curl: spec("EKCbcdDFPHhmoxUQreXYytzTuAw", CURL_VALUE, { flags: CURL_FLAG }),
+  wget: spec("eoaiBtOTwQPUlARDIX", WGET_VALUE, { flags: WGET_FLAG }),
+  httpie: spec("spoaAP", HTTPIE_VALUE, { flags: HTTPIE_FLAG }),
   // Interpreter options that take a value, including the program options (`python -c`, `perl -e`).
   python: spec("cmQWX", ["check-hash-based-pycs"]),
   perl: spec("eEIMm"),
