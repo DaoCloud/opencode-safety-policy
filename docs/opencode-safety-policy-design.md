@@ -45,7 +45,7 @@
 - 本插件是**客户端/Agent 执行前防线**，不替代远端主机或带外管理平面的 RBAC、sudoers、SSH 最小权限或只读凭据（生产环境建议同时给 Agent 分配 Redfish / UFM / NICo / Kubeconfig 只读账号作为硬底线）。
 - **用户手动 `!cmd` 边界**：OpenCode 中用户在 TUI 直接输入的 `!cmd`（`packages/core/src/session/shell.ts`）直接调用 `shell.create()`，不经过 `tool.hook("execute.before")` 与 `permission.assert`（只会触发 `shell.hook("create.before")`），属于用户主动执行，不在 AI Agent 拦截范围内。
 - **本机 Server API 边界**：插件 RPC（`ctx.rpc.register`）与 `permission.reply`、`permission.saved.update` 等接口都通过本机 OpenCode Server HTTP API 暴露，RPC handler 无法识别调用者身份。service 模式下 Server 密码保存在 `~/.config/opencode/service.json`（`0600`，但与 Agent 同用户可读）；模式状态与已保存权限存放在 OpenCode SQLite 数据库（`~/.local/share/opencode/opencode*.db`，可由 `OPENCODE_DB` 覆盖）。Agent 理论上可以读取密码后 `curl` 调用 `safety.setMode` 或代替用户回复审批，也可以直接改写数据库。插件通过防自篡改规则拦截这些路径与本机 Server 端点的常见访问形态（见 [4.2](#42-规则分类明细)），但无法覆盖所有动态构造的访问。需要硬保证时使用 `OPENCODE_SAFETY_LOCK_MODE`：它在 Server 进程启动时读入，`safety.setMode` 在锁定时直接拒绝。
-- **自保护覆盖边界**：shell 自保护只检查静态可见的路径。解释器内联代码与脚本文件中的写入（`python -c "open('opencode.json','w')"`、`node x.js`）不在覆盖范围内；递归删除包含 `.opencode/` 的项目目录（如 `rm -rf .`）不视为自篡改；不在只读白名单中的读取命令（如 `jq . opencode.json`）也会被拒绝，可通过 `sshReadOnlyAllowlist` 放行（该白名单同时作用于远端）。
+- **自保护覆盖边界**：shell 自保护只检查静态可见的路径。解释器内联代码与脚本文件中的写入（`python -c "open('opencode.json','w')"`、`node x.js`）不在覆盖范围内，Stage 3.5 预扫出的命令也只按规则判定、不做自保护检查；递归删除包含 `.opencode/` 的项目目录（如 `rm -rf .`）不视为自篡改；不在只读白名单中的读取命令（如 `jq . opencode.json`）也会被拒绝，可通过 `sshReadOnlyAllowlist` 放行（该白名单同时作用于远端）。
 - **`Unattended` 自动审批边界**：OpenCode 的 `Unattended` 自动审批在 `permission.hook("evaluate")` **之后**执行（`packages/core/src/permission.ts`），且仅会覆写 `"ask"`、不会覆写 `"deny"`。因此凡在无人值守/自动审批模式下**绝不允许自动放行**的高危规则，必须配置为 `deny` 而非依赖 `ask`。
 - **Code Mode 拒批可被捕获边界**：Code Mode 默认开启（只要 `execute` 工具未被整体 deny）。所有经 Code Mode `execute` 发起的嵌套工具调用，其错误都会被 `CodeModeTool.create`（`packages/core/src/codemode/tool.ts`）统一转换为 `ToolFailure` 抛回沙箱 JS VM。Promise 插件在 `execute.before` 中抛出的拒绝已被包装为 `Tool.Error`，因此同样会被转换，沙箱代码可以用 `try/catch` 捕获后继续执行下一条语句，当前 step 不会因拒批而终止。受影响范围包括 MCP 工具、`opencode_worktree_remove` 等默认运行在 Code Mode 中的工具，以及启用 `full_codemode` 后的 `shell`（未启用时 `shell` 为直调）。直调时插件抛出的拒绝同样只作为工具错误返回给模型，step 不会结束，模型可以继续发起下一次调用（见附录 A 的 S3）；只有用户在审批弹窗中不带反馈地拒绝（`Permission.DeclinedError`）才会结束 step。每个嵌套调用仍会单独经过 `execute.before` 与 `permission.hook("evaluate")`，被拒绝的调用本身不会执行，但高危操作必须坚持 `deny`，不能依赖"拒批后终止整步"。
 - **`permission.hook("evaluate")` 的 `save` 边界**：`permission.hook("evaluate")` 仅允许修改 `event.effect` 与 `event.message`，无法清空上游内置工具（如 `webfetch`、`edit`、`patch`、`CodeModeBun`、`shell`）自带的 `save`。因此本插件对经 `permission.hook("evaluate")` 拦截的受保护端点写请求优先设为 `deny`，避免在弹窗点击 `Always` 时将 `webfetch: *` 等写入持久化白名单。对内置 `shell` 请求，本插件每次都在 hook 中强制 `ask`，已保存的规则无法绕过插件判定（见 [2](#2-总体架构)）。
@@ -189,7 +189,12 @@
   │     • 编码/间接执行（eval、$'\x72\x6d'、xargs rm）
   │     • 同命令先写后执行 / 本地脚本 TOCTOU（cat > /tmp/run.sh <<EOF ... && bash /tmp/run.sh）：
   │       若 execute.before 阶段目标脚本尚不存在（ENOENT）或同命令内先写入再执行，
-  │       除扫描内联写入正文外，一律按 opaque 走 fail-closed，绝不静默 allow
+  │       除扫描内联写入正文外，一律按 opaque 走 fail-closed，绝不静默 allow。
+  │       "先写入"指前面的本机命令以输出重定向写该路径，或 tee、cp、mv、install、ln、rsync、scp、
+  │       curl、wget、dd、sed、patch、git、tar、unzip 的参数含该路径；"执行"包括 shell 或解释器的
+  │       脚本参数与 < 输入、source / .，以及按路径直接执行（./run.sh）。写入内容是 cat / tee 的
+  │       heredoc、here-string 或字面量 echo / printf 时，正文按执行方式分析：shell 递归分析，
+  │       解释器走 Stage 3.5 预扫，直接执行按 shebang 判断
   │
   ├─► Stage 3: Wrapper 递归拆壳（Recursive Unwrapper，最大深度 8）
   │     逐层剥离外层包装器，并记录执行上下文（isRemote、targetHost、wrapperChain）：
@@ -240,10 +245,21 @@
   │       - 对照 Redfish（/redfish/v1/）、UFM（/ufmRest/）、NICo API 及用户配置的
   │         protectedEndpoints（BMC 网段、UFM VIP、NICo VIP）做读写判定：
   │         GET 查询放行，非 GET 写操作按风险等级直接 deny 或 ask。
-  │     • 对 python/python3 -c、node -e 内联代码，以及可读取的本地脚本执行
-  │       （python3 foo.py / bash foo.sh）做轻量静态预扫，命中敏感路径/端点 + 写动作关键字
-  │       （如 /redfish/v1/ + InsertMedia/ComputerSystem.Reset/BootSourceOverride/PATCH/POST）
-  │       时按规则拦截或强制 ask；脚本尚不存在时走 TOCTOU fail-closed。
+  │     • 本地脚本与解释器代码预扫（ScriptScanner）：
+  │       - shell 以本地文件为脚本参数（bash foo.sh、sh -e foo.sh）时，与 bash < foo.sh 一样读入正文
+  │         按执行位置递归分析（读取范围与不可读的判定见 3.2）。source / . 与直接执行（./foo.sh）
+  │         不读取文件（source 常用于加载 venv activate 等环境脚本），只做 Stage 2 的先写后执行检测；
+  │       - python/perl/ruby/node 的 -c/-e/-p 内联代码、heredoc / here-string 程序、< foo.py 输入与
+  │         脚本参数（python3 foo.py；node 依次尝试 .js、.mjs、.cjs 后缀）做轻量静态预扫。代码调用
+  │         进程 API（os.system、subprocess、child_process、system、反引号等）时，每个字符串字面量
+  │         及全部由字面量组成的列表（["rm", "-rf", "/data"]）按 shell 命令分析；文件删除 API
+  │         （shutil.rmtree、os.remove、fs.rmSync、FileUtils.rm_rf 等）的字面量路径按等价的 rm 分析；
+  │         命中敏感端点 + 写动作关键字（如 /redfish/v1/ + InsertMedia/ComputerSystem.Reset/
+  │         BootSourceOverride/PATCH/POST）时按 HTTP 规则判定。预扫得到的命令只按规则判定，
+  │         无法解析、动态命令名、远端未知命令与自保护不对其生效；
+  │       - 可读的本地脚本正文未命中规则时，strict 下 ask（执行前内容可能被修改，预扫也不完整），
+  │         relaxed 下放行；脚本路径在运行期才能确定或脚本不存在时走 TOCTOU fail-closed；
+  │         解释器脚本存在但无法预扫（目录、超过 64 KiB、二进制）时与正文未命中规则的脚本同等处理。
   │
   └─► Stage 4: 规则匹配与风险汇总（RuleEvaluator）
         对拆解出的所有原子命令（含内层命令、HTTP 请求结构、heredoc/脚本正文、opaque 标记）
@@ -257,7 +273,7 @@
 | **直接附带远程命令** | `ssh root@node1 "kubectl delete pod foo"` | 解析 `ssh` 参数（跳过 `-i/-p/-o/-F/-J/-l/-W` 等带值选项及无值 flag），提取 `destination` 后所有参数作为远程命令并递归回送 Stage 1，标记 `isRemote: true` |
 | **嵌套引号/多层 shell** | `ssh node1 "sudo bash -c 'rm -rf /data/*'"` | 递归剥离 `ssh` → `sudo` → `bash -c`，还原出 `rm -rf /data/*`（`isRemote: true`） |
 | **Heredoc 喂脚本** | `ssh node1 'bash -s' <<'EOF' \n rm -rf /tmp/a \n EOF` | 提取 heredoc 正文作为远端脚本递归分析，每条命令与直接附带的远程命令同等判定：命中规则按规则处置，只读白名单放行，其余在 `strict` 下 `ask` |
-| **本地文件重定向** | `ssh node1 'bash -s' < ./cleanup.sh` | 本机 `<` 重定向喂给 shell 或 `ssh` 执行的文件在分析时读入。允许读取范围是不超过 64 KiB 的普通文件，FIFO、设备、目录、不存在、无权限、含 NUL 字节或路径在运行期才确定（`< $F`）的文件视为不可读，`/dev/null` 视为空输入；相对路径按候选工作目录解析。所有候选都不可读时按 fail-closed 处理（`strict` 下 `deny`，`relaxed` 下 `ask`）。可读时正文按执行位置递归分析（`ssh` 为远端），正文中的 `cd` 计入后续命令的候选工作目录，命中规则按规则处置；文件在执行前可能被改写，其余情况在 `strict`、`relaxed` 下均 `ask`。远端命令里的 `<` 指向远端文件，按远端未知命令处理；解释器（`python3 < x.py`）由 Stage 3.5 预扫 |
+| **本地文件重定向** | `ssh node1 'bash -s' < ./cleanup.sh` | 本机 `<` 重定向喂给 shell 或 `ssh` 执行的文件在分析时读入。允许读取范围是不超过 64 KiB 的普通文件，FIFO、设备、目录、不存在、无权限、含 NUL 字节或路径在运行期才确定（`< $F`）的文件视为不可读，`/dev/null` 视为空输入；相对路径按候选工作目录解析。所有候选都不可读时按 fail-closed 处理（`strict` 下 `deny`，`relaxed` 下 `ask`）。可读时正文按执行位置递归分析（`ssh` 为远端），正文中的 `cd` 计入后续命令的候选工作目录，命中规则按规则处置；其余情况在 `strict` 下 `ask`（文件在执行前可能被改写），`relaxed` 下放行；同一条命令先写入该文件时按 Stage 2 的先写后执行 fail-closed。`bash x.sh` 等脚本参数同样处理。远端命令里的 `<` 指向远端文件，按远端未知命令处理；解释器（`python3 < x.py`）由 Stage 3.5 预扫 |
 | **上游静态文本管道** | `echo "docker stop app" \| ssh node1 sh` | 管道左侧为单个字面量 `echo` / `printf` 时，其输出等同 here-string，与 heredoc 同等判定，命中高危直接 `deny`。`echo` 参数含反斜杠或以 `-` 开头（`-n`/`-e`/`-E` 除外），`printf` 带选项、含 `%s`/`%%` 以外的转换或 POSIX 单字符转义以外的转义（含八进制），输出超过 64 KiB，或左侧为复合命令、含展开或重定向时，按不可静态分析的管道处理 |
 | **不可静态分析的管道/动态流** | `curl -s ... \| ssh node1 sh`、`base64 -d \| ssh node1 sh` | 标记 `opaqueRemoteStdin`，遵循 **fail-closed**：`strict` 下直接 `deny`，`relaxed` 下强制 `ask` |
 | **SSH 远端执行未知脚本** | `ssh node1 /opt/ops/reset.sh` | 标记 `unknownRemoteCommand`：`strict` 下非只读白名单一律 `ask`（或对高危路径/名称 `deny`） |
@@ -351,7 +367,7 @@
 | **中危本机清理/操作（`medium`）**（本机工作区/`/tmp` 常规 `rm`、普通进程 `kill`/`pkill`） | `ask`（弹窗人工确认，降低误报） | `allow` | `allow` |
 | **远端 SSH 只读命令** | `allow` | `allow` | `allow` |
 | **远端 SSH 未知/非只读命令** | `ask`（弹窗人工确认） | `allow`（除非命中高危规则） | `allow` |
-| **SSH 管道/重定向/heredoc & Opaque / 脚本 TOCTOU** | `deny`（不可分析流） / `ask`（可检出安全正文或 TOCTOU） | `ask`（弹窗人工确认） | `allow` |
+| **SSH 管道/重定向/heredoc & Opaque / 本地脚本 TOCTOU** | `deny`（不可分析流、脚本不存在或同命令先写后执行） / `ask`（可读本地脚本正文未命中规则） | `ask`（不可分析流、脚本不存在或同命令先写后执行） / `allow`（可读本地脚本正文未命中规则） | `allow` |
 | **Code Mode `fetch` 重定向写受保护端点**（防 `assertNotDenied` 静默放行 `ask`） | `deny`（硬阻断） | `deny`（硬阻断） | `allow` |
 | **防自篡改（修改安全插件/配置/rulesFile）** | `deny` | `deny` | `deny`（`alwaysProtectSelf: false` 时 `allow`） |
 

@@ -324,6 +324,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
   - 支持 `-X POST`、`-XPOST`、`--request=DELETE`、`-T`，以及 `-d`/`--json`/`-F` 隐含的 POST。
   - 遇到 `-K` 且配置文件无法解析时，按 opaque 处理。
   - 手写 IPv4/IPv6 CIDR 与主机名匹配，不引入依赖。
+  - `script-scanner.ts` 补充受保护端点 + 写动作关键字的预扫（Stage 3.5）。
 - commit：`feat: extract http write requests from curl and wget`
 
 ### P1-4 webfetch 与 Code Mode fetch
@@ -336,7 +337,12 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 
 - 设计：3.1 Stage 2（TOCTOU）、Stage 3.5
 - 产出：`src/script-scanner.ts`，`test/http-script.test.ts` 补充用例
-- 要点：预扫 `python -c`、`node -e` 和可读的本地脚本。脚本还不存在，或同一条命令先写后执行时，按 opaque 处理。
+- 要点：
+  - `bash x.sh` 等 shell 脚本参数复用 P1-2 的读取与递归分析。`source`/`.` 与 `./x.sh` 不读文件，只做先写后执行检测。
+  - 预扫 python/perl/ruby/node 的内联代码、heredoc 程序、`< x.py` 与脚本参数：调用进程 API 时字符串字面量与字面量列表按 shell 命令分析，文件删除 API 映射为 `rm`。预扫命令只按规则判定。
+  - 可读脚本正文未命中规则时，strict 下 ask，relaxed 下放行。P1-2 的 `bash < x.sh` 在 relaxed 下同步改为放行。
+  - 脚本路径运行期才确定、脚本不存在，或同一条命令先写后执行时，按 opaque fail-closed，并分析内联写入的正文。
+  - 端点 + 写动作关键字的预扫依赖 HTTP 规则，放到 P1-3。
 - commit：`feat: prescan inline and local scripts`
 
 ### P1-6 /safety test 与 CLI
