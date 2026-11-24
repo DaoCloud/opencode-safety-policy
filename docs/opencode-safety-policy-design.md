@@ -119,7 +119,7 @@
 > 注意：
 > - **不使用** `shell.hook("create.before")` 做拦截：它声明为 `NoFailures`，抛错会导致未预期中断而非正常拒绝；它也会对用户 `!cmd` 触发，且入参中没有 `sessionID` 与调用来源，无法区分 Agent 与用户。
 > - 插件**按 Location 实例化**（每个工作目录一个实例，各自执行 `setup()`）。模式状态必须在每次决策时从 `ctx.storage` 读取（可加秒级短缓存），不能只保存在内存中，否则 `/safety` 只对处理 RPC 的那个实例生效。shell 的 `ask` 标记在同一 Location 实例内产生与消费，可以只放在内存中。
-> - `setup()` 必须返回 `Cleanup` 函数，用于在 `opencode.json` 变更触发整插件重载时释放审计日志句柄或文件监听。
+> - `setup()` 中通过 `ctx` 注册的 hook 与 RPC 挂在插件 scope 上，`opencode.json` 变更触发整插件重载或卸载时由 OpenCode 自动注销。插件自己持有的资源（如审计日志句柄）才需要由 `setup()` 返回的 `Cleanup` 释放。
 
 ---
 
@@ -354,7 +354,7 @@ opencode-safety-policy/       # 仓库根目录
 ├── package.json              # 插件 manifest（exports: "." / "./server" / "./tui" / "./rpc"，零三方依赖）
 ├── tsconfig.json
 ├── README.md                 # 安装、配置、/safety 用法与规则扩展说明
-├── index.ts                  # Server 插件入口（@opencode/plugin）：define({ id, setup })，注册 hooks/RPC 并返回 Cleanup
+├── index.ts                  # Server 插件入口（@opencode/plugin）：define({ id, setup })，注册 hooks/RPC（随插件 scope 自动注销）
 ├── tui.ts                    # TUI 插件入口（@opencode/plugin/tui）：注册 /safety keymap slash + Toast/Dialog，监听 permission.asked 展示规则原因
 ├── rpc.ts                    # Server <-> TUI 共享 RPC 契约定义（status / setMode / test）
 ├── cli.ts                    # 独立本地调试 CLI（bun ./cli.ts test "<cmd>"）
@@ -523,7 +523,7 @@ opencode-safety-policy/       # 仓库根目录
 
 1. **阶段 1（P0）：MVP 闭环**
    - 建立包目录、`package.json`、类型定义；实现基础 `tokenizer.ts` 与 `unwrapper.ts`（`ssh`/`sshpass`/`sudo`/`bash -c`/`kubectl exec`/`docker exec`）、声明式规则引擎与 `rules/*.json`、`rulesFile` 加载器、基于 `ctx.storage` 的 `strict`/`relaxed`/`off` 状态（每次决策读取）与 TTL 自动回落。
-   - 实现 `path-util.ts`（`nearestExistingAncestor` `realpath` + `relativeTail`）、`tool.hook("execute.before"/"execute.after")`（`shell` 联合 `input.workdir` 展开后的 `deny` 与 `ask` 标记、`opencode_worktree_remove` 与 MCP 的 `deny`/自发 `assert`）、`permission.hook("evaluate")`（按 `source.id` / 子串匹配标记强制 shell `ask`、`edit`/`external_directory`/`read` 规范化路径防篡改）、Server `rpc-handlers.ts` + TUI `tui.ts`（`keymap.layer` `/safety` + `Toast`/`Dialog`）、`Cleanup` 清理逻辑。
+   - 实现 `path-util.ts`（`nearestExistingAncestor` `realpath` + `relativeTail`）、`tool.hook("execute.before"/"execute.after")`（`shell` 联合 `input.workdir` 展开后的 `deny` 与 `ask` 标记、`opencode_worktree_remove` 与 MCP 的 `deny`/自发 `assert`）、`permission.hook("evaluate")`（按 `source.id` / 子串匹配标记强制 shell `ask`、`edit`/`external_directory`/`read` 规范化路径防篡改）、Server `rpc-handlers.ts` + TUI `tui.ts`（`keymap.layer` `/safety` + `Toast`/`Dialog`）。
    - 验证：`bun test test/tokenizer.test.ts test/unwrapper.test.ts test/rules-examples.test.ts test/mode.test.ts test/plugin.test.ts` 全部通过，并在本机 OpenCode 中通过非自动发现本地目录 + `policies` 显式配置实测：
      - 本机 `rm -rf /data`、`shell({ workdir: "/", command: "rm -rf etc" })`、`kubectl delete`、`docker stop`、`opencode_worktree_remove(force: true)` 被拦截；
      - 本机 `/tmp` 常规 `rm` 只弹一次内置 shell 审批（直调与 `full_codemode` 两种场景），Desktop/Web App 弹窗显示规则原因；点击 `Always` 后再次执行同一命令仍弹窗；
