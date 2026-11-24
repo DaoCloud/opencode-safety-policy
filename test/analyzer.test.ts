@@ -249,7 +249,7 @@ describe("script input", () => {
     ["bash -c 'exec 2>/dev/null; bash' < bad.sh", "rm-system-path"],
     [". /dev/stdin < cdroot.sh; rm -rf etc", "rm-system-path"],
     ["bash < ~/bad.sh", "rm-system-path"],
-    ["cd /tmp && bash < ../ocsp-analyzer/work/project/bad.sh", "rm-system-path"],
+    ["cd /usr && bash < ../ocsp-analyzer/work/project/bad.sh", "rm-system-path"],
     ["cd sub && bash < ../bad.sh", "rm-system-path"],
     ["sudo -D / bash < rel.sh", "rm-system-path"],
     ["bash < ns.sh", "k8s-delete-namespace"],

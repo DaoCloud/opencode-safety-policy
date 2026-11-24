@@ -14,6 +14,8 @@ import type { Mode } from "../src/types"
 const HOME = "/ocsp-self/home"
 const CWD = "/ocsp-self/repo"
 const RULES_FILE = "/ocsp-self/rules/extra.json"
+// OpenCode's system configuration directory.
+const SYSTEM = process.platform === "darwin" ? "/Library/Application Support/opencode" : "/etc/opencode"
 const PATHS = protectedPaths({ home: HOME, env: {}, rulesFile: [RULES_FILE] })
 const RULES = buildRuleSet({ rules: loadBuiltinRules() })
 const READ_ONLY = loadReadOnlyList()
@@ -28,7 +30,7 @@ const run = (command: string, mode: Mode = "relaxed", workdir?: string, protect:
 describe("protected paths", () => {
   test.each([
     `${PLUGIN_DIR}/index.ts`,
-    "/etc/opencode/opencode.json",
+    `${SYSTEM}/opencode.json`,
     `${HOME}/.config/opencode`,
     `${HOME}/.config/opencode/plugins/x.ts`,
     RULES_FILE,
@@ -44,7 +46,7 @@ describe("protected paths", () => {
     `${HOME}/.opencode/plan/a.md`,
     `${CWD}/opencode.json.bak`,
     `${CWD}/src/a.ts`,
-    "/etc/opencode-old/x",
+    `${SYSTEM}-old/x`,
     `${HOME}/.config/other`,
     "/ocsp-self/rules/other.json",
   ])("%s is not protected", (p) => expect(isProtected(p, PATHS)).toBe(false))
@@ -69,11 +71,11 @@ describe("shell", () => {
     "cp /tmp/x /ocsp-self/rules/extra.json",
     "dd if=/dev/zero of=opencode.json",
     "make CONFIG=.opencode/x",
-    "sudo tee /etc/opencode/opencode.json",
+    `sudo tee '${SYSTEM}/opencode.json'`,
     `rm ${PLUGIN_DIR}/index.ts`,
     "cd .opencode && touch a",
-    "cd /etc/opencode && git checkout .",
-    "env -C /etc/opencode touch a",
+    `cd '${SYSTEM}' && git checkout .`,
+    `env -C '${SYSTEM}' touch a`,
     "cd $X && touch .opencode/a",
     "sudo -i touch .opencode/a",
     "rm -rf ~/.config",
@@ -91,7 +93,7 @@ describe("shell", () => {
   test.each([
     "cat opencode.json",
     "ls -la .opencode ~/.config/opencode",
-    "grep -r x /etc/opencode",
+    `grep -r x '${SYSTEM}'`,
     "cd .opencode && ls",
     "cat opencode.json > /tmp/backup.json",
     "echo x > ~/.opencode/plan/a.md",
@@ -107,8 +109,8 @@ describe("shell", () => {
   })
 
   test("checks workdir", () => {
-    expect(run("touch a", "relaxed", "/etc/opencode").ruleId).toBe("self-protect")
-    expect(run("ls", "relaxed", "/etc/opencode").decision).toBe("allow")
+    expect(run("touch a", "relaxed", SYSTEM).ruleId).toBe("self-protect")
+    expect(run("ls", "relaxed", SYSTEM).decision).toBe("allow")
   })
 
   test("applies in every mode", () => {

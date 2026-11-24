@@ -189,16 +189,21 @@ describe.skipIf(!E2E_ENABLED)("server credentials and api", () => {
     }
   })
 
-  test("denies the Server API through curl and webfetch but not another local /api", async () => {
+  test("denies the Server API through curl and webfetch", async () => {
     expectDenied(await h.shell(`curl -s ${h.url}/api/session`), "self-protect")
     const rpc = `${h.url}/api/rpc/opencode-safety-policy/setMode`
     expectDenied(await h.shell(`curl -s -X POST ${rpc} -d '{"input":{"mode":"off"}}'`), "self-protect")
     expect(await status()).toMatchObject({ mode: "strict" })
     const fetched = await h.call("webfetch", { url: `${h.url}/api/session`, format: "text" })
     expect(fetched.result).toContain("[safety-policy:self-protect]")
-    const allowed = await h.shell(`curl -s http://127.0.0.1:${other.port}/api/v1/query`)
-    expectAllowed(allowed)
-    expect(allowed.result).toContain("OTHER-API-OK")
+  })
+
+  test("tells another local /api from the Server only through /proc", async () => {
+    const call = await h.shell(`curl -s http://127.0.0.1:${other.port}/api/v1/query`)
+    // Without /proc (macOS) every local port counts as the Server's (design 4.2).
+    if (process.platform !== "linux") return expectDenied(call, "self-protect")
+    expectAllowed(call)
+    expect(call.result).toContain("OTHER-API-OK")
   })
 })
 

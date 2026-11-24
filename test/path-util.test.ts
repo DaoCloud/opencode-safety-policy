@@ -6,6 +6,9 @@ import { dirLinks, effectiveCwd, expandPathArgs, linkAlias, resolveCanonicalPath
 
 let root = ""
 let home = ""
+// `/etc` and `/var` link to `/private/...` on macOS.
+const ETC = realpathSync("/etc")
+const VAR = realpathSync("/var")
 
 beforeAll(() => {
   root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "ocsp-path-")))
@@ -56,7 +59,7 @@ describe("resolveCanonicalPath", () => {
   test.each([
     ["/", "/"],
     ["..", "/"],
-    ["../../etc", "/etc"],
+    ["../../etc", ETC],
   ])("%s from / is %s", (input, expected) => {
     expect(resolveCanonicalPath(input, "/", home)).toBe(expected)
   })
@@ -98,19 +101,19 @@ describe("expandPathArgs", () => {
   }
 
   test.each([
-    ["rm -rf etc", "rm -rf /etc"],
-    ["/bin/rm -rf ./etc/../usr", "/bin/rm -rf /usr"],
+    ["rm -rf etc", `rm -rf ${ETC}`],
+    ["/bin/rm -rf ./etc/../usr", `/bin/rm -rf ${path.join(ETC, "../usr")}`],
     ["rm -rf *", "rm -rf /*"],
     ["rm -r -- -f", "rm -r -- /-f"],
     ["rmdir --ignore-fail-on-non-empty boot", "rmdir --ignore-fail-on-non-empty /boot"],
     ["shred -n 3 -u -s 1K disk", "shred -n 3 -u -s 1K /disk"],
     ["chmod -R 777 .", "chmod -R 777 /"],
-    ["chmod -w etc", "chmod -w /etc"],
+    ["chmod -w etc", `chmod -w ${ETC}`],
     ["chmod --reference=a b", "chmod --reference=a /b"],
     ["chmod --ref a b", "chmod --ref a /b"],
-    ["chown -R root:root etc", "chown -R root:root /etc"],
-    ["chown --from root:root wheel var", "chown --from root:root wheel /var"],
-    ["chgrp -R wheel var", "chgrp -R wheel /var"],
+    ["chown -R root:root etc", `chown -R root:root ${ETC}`],
+    ["chown --from root:root wheel var", `chown --from root:root wheel ${VAR}`],
+    ["chgrp -R wheel var", `chgrp -R wheel ${VAR}`],
     ["mv -t dst a", "mv -t /dst /a"],
     ["cp -f --target-directory=dst a", "cp -f --target-directory=/dst /a"],
     ["mv --targ=dst a", "mv --targ=/dst /a"],
@@ -120,7 +123,7 @@ describe("expandPathArgs", () => {
     ["sudoedit -u root hosts", "sudoedit -u root /hosts"],
     ["dd if=zero of=sda bs=1M", "dd if=/zero of=/sda bs=1M"],
     ["find . -delete", "find / -delete"],
-    ["find -L -D tree etc usr -name x", "find -L -D tree /etc /usr -name x"],
+    ["find -L -D tree etc usr -name x", `find -L -D tree ${ETC} /usr -name x`],
     ["ls etc", "ls etc"],
   ])("%s", (input, expected) => {
     expect(expand(input).argv.join(" ")).toBe(expected)
@@ -141,7 +144,7 @@ describe("expandPathArgs", () => {
   })
 
   test("keeps dynamic arguments", () => {
-    expect(expand("rm -rf $DIR/x `pwd` etc")).toEqual({ argv: ["rm", "-rf", "$DIR/x", "`pwd`", "/etc"], paths: ["/etc"] })
+    expect(expand("rm -rf $DIR/x `pwd` etc")).toMatchObject({ argv: ["rm", "-rf", "$DIR/x", "`pwd`", ETC], paths: [ETC] })
   })
 
   test("adds the arguments under a symlink to their target", () => {
