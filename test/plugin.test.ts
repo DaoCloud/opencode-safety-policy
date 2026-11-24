@@ -8,7 +8,7 @@ import { registerPermissionHook } from "../src/hooks/permission"
 import { createMarkers, MARKER_TTL_MS, registerToolHooks } from "../src/hooks/tool"
 import { createPolicy, type Policy } from "../src/policy"
 import type { CompiledRule } from "../src/rules/matcher"
-import { PLUGIN_DIR } from "../src/rules/self-protect"
+import { PLUGIN_DIR, protectedPaths } from "../src/rules/self-protect"
 import { createRpcHandlers } from "../src/rpc-handlers"
 import { LOCK_ENV, MODE_ENV } from "../src/state"
 import { BLOCK_PREFIX, createStats } from "../src/stats"
@@ -198,7 +198,12 @@ describe("fail closed", () => {
     const policy: Policy = {
       home: "/home/u",
       mode: { resolve: async () => ({ mode: "strict", source: "default", locked: false }), setMode: async () => { throw new Error("unused") } },
-      load: () => ({ options: {}, rules: { severity: [], deny: [bad], ask: [], allow: [] }, readOnly: new Map(), protect: { roots: [], exempt: [] } }),
+      load: () => ({
+        options: {},
+        rules: { severity: [], deny: [bad], ask: [], allow: [] },
+        readOnly: new Map(),
+        protect: protectedPaths({ home: "/home/u", env: {} }),
+      }),
     }
     const s = await setup({ policy })
     await expect(s.before(call("shell", { command: "ls" }))).rejects.toThrow("[safety-policy:policy-error] boom")
@@ -315,6 +320,23 @@ describe("evaluate", () => {
       expect(event.message).toStartWith("[safety-policy:config-error]")
       expect((await s.evaluate(fetch("https://example.com/x"))).effect).toBe("allow")
     })
+
+    test("denies every method to the local Server API, in off mode too", async () => {
+      // A port of this process is a Server port (every port is where they cannot be found).
+      const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() })
+      try {
+        const s = await setup({ mode: "off" })
+        const message = expect.stringMatching(/^\[safety-policy:self-protect\] 禁止调用本机/)
+        const base = `127.0.0.1:${server.port}`
+        const api = [fetch(`http://${base}/api/info`), fetch(`http://localhost:${server.port}/api/rpc/x`, "POST")]
+        for (const request of api)
+          expect(await s.evaluate({ ...request, effect: "ask" })).toMatchObject({ effect: "deny", message })
+        for (const url of [`http://${base}/`, "https://example.com/api/x"])
+          expect((await s.evaluate(fetch(url))).effect).toBe("allow")
+      } finally {
+        await server.stop(true)
+      }
+    })
   })
 })
 
@@ -335,6 +357,29 @@ describe("self-protection", () => {
     const s = await setup({ options: { alwaysProtectSelf: false } })
     await expect(s.before(call("shell", { command: "echo x > .opencode/a" }))).rejects.toThrow("[safety-policy:self-protect]")
     expect((await s.evaluate({ action: "edit", resources: ["opencode.json"] })).effect).toBe("deny")
+  })
+
+  test("denies reads, edits and grep of Server credentials and the database", async () => {
+    const message = expect.stringMatching(/^\[safety-policy:self-protect\] 禁止读写 OpenCode Server 凭据与数据库/)
+    const s = await setup({ mode: "off" })
+    const denied = [
+      { action: "read", resources: ["/home/u/.local/state/opencode/service.json"] },
+      { action: "read", resources: ["src/a.ts", "/proc/1/environ"] },
+      { action: "edit", resources: ["/home/u/.config/opencode/service.json"] },
+      { action: "edit", resources: ["/home/u/.local/share/opencode/opencode.db-wal"] },
+      { action: "grep", resources: ["password"], metadata: { path: "/home/u/.local/state/opencode/service.json" } },
+    ]
+    for (const request of denied) expect(await s.evaluate(request)).toMatchObject({ effect: "deny", message })
+    const inside = await setup({ directory: "/home/u/.local/state/opencode" })
+    expect((await inside.evaluate({ action: "read", resources: ["service.json"] })).effect).toBe("deny")
+    const allowed = [
+      { action: "read", resources: ["service.json"] },
+      { action: "grep", resources: ["x"], metadata: { path: "/home/u/.local/state/opencode" } },
+      { action: "grep", resources: ["x"], metadata: {} },
+    ]
+    for (const request of allowed) expect((await s.evaluate(request)).effect).toBe("allow")
+    const disabled = await setup({ mode: "off", options: { alwaysProtectSelf: false } })
+    expect((await disabled.evaluate(denied[0]!)).effect).toBe("allow")
   })
 
   test("a broken config denies edits except in off mode", async () => {

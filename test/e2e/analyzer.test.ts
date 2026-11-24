@@ -240,6 +240,12 @@ describe.skipIf(!E2E_ENABLED)("code mode fetch", () => {
     expect(hits).toEqual([])
   })
 
+  test("denies a read from the local Server API", async () => {
+    const call = await fetchCall(`${h.url}/api/session`, "GET")
+    expect(call.result).toContain("[safety-policy:self-protect]")
+    expect(call.result).not.toContain("STATUS 200")
+  })
+
   test("allows a read from a protected endpoint", async () => {
     const call = await fetchCall(`http://127.0.0.2:${guarded.port}/redfish/v1/Systems`, "GET")
     expect(call.result).toContain("STATUS 200 GUARDED-OK")

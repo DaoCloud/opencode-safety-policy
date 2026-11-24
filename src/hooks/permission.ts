@@ -8,10 +8,13 @@
  *   marked command. The plugin's own prompts (`metadata.safetyPolicy`) are always asked.
  * - `edit`: writes to a protected path are denied (design 4.2). This also covers Code Mode `Bun.write`, which has no
  *   `execute.before`.
+ * - `read` (the read tool, Code Mode `Bun.file`), `edit` and `grep` (its `metadata.path`): Server credentials and the
+ *   OpenCode database are denied (design 4.2).
  * - `webfetch`: a request other than GET / HEAD that hits an HTTP rule (Redfish, UFM, `protectedEndpoints`) is denied
  *   in every mode but `off` (design 4.3). An `ask` would offer to save `webfetch: *`, and Code Mode checks redirect
  *   hops only for `deny`. Each hop is evaluated with the method of the first request. The body is not visible, so it
- *   is unknown. The webfetch tool and image downloads send no method and only GET.
+ *   is unknown. The webfetch tool and image downloads send no method and only GET. Any request to the local Server
+ *   API is denied like a protected path.
  */
 
 import type { Plugin } from "@opencode/plugin"
@@ -19,7 +22,8 @@ import { request } from "../http-extractor"
 import { resolveCanonicalPath } from "../path-util"
 import { active, type Policy } from "../policy"
 import { decide } from "../rules"
-import { isProtected, selfProtectVerdict } from "../rules/self-protect"
+import { isProtected, isSecret, secretVerdict, selfProtectVerdict } from "../rules/self-protect"
+import { isLocalApi, serverApiRequest, serverApiVerdict } from "../rules/server-api"
 import type { Stats } from "../stats"
 import { describe, label, type Markers } from "./tool"
 
@@ -50,6 +54,8 @@ async function evaluate(ctx: Pick<Context, "location">, deps: PermissionHookDeps
   if (event.effect === "deny") return
   if (event.action === "shell") return forcePrompt(deps.markers, event)
   if (event.action === "edit") return protectFiles(ctx, deps, event)
+  if (event.action === "read") return protectSecrets(ctx, deps, event, event.resources)
+  if (event.action === "grep") return protectSecrets(ctx, deps, event, [String(event.metadata?.path ?? ".")])
   if (event.action === "webfetch") return protectEndpoints(deps, event)
 }
 
@@ -67,21 +73,40 @@ function forcePrompt(markers: Markers, event: Evaluation) {
 async function protectFiles(ctx: Pick<Context, "location">, deps: PermissionHookDeps, event: Evaluation) {
   const state = await enforced(deps, event)
   if (!state) return
+  const protect = state.loaded.protect
   for (const resource of event.resources) {
     const target = resolveCanonicalPath(resource, ctx.location.directory, deps.policy.home)
-    if (!isProtected(target, state.loaded.protect)) continue
-    const verdict = selfProtectVerdict(target)
-    return deny(deps.stats, event, verdict.ruleId, verdict.reason)
+    if (isSecret(target, protect)) return deny(deps.stats, event, "self-protect", secretVerdict(target).reason)
+    if (isProtected(target, protect)) return deny(deps.stats, event, "self-protect", selfProtectVerdict(target).reason)
+  }
+}
+
+async function protectSecrets(
+  ctx: Pick<Context, "location">,
+  deps: PermissionHookDeps,
+  event: Evaluation,
+  paths: ReadonlyArray<string>,
+) {
+  const state = await enforced(deps, event)
+  if (!state) return
+  for (const p of paths) {
+    const target = resolveCanonicalPath(p, ctx.location.directory, deps.policy.home)
+    if (!isSecret(target, state.loaded.protect)) continue
+    return deny(deps.stats, event, "self-protect", secretVerdict(target).reason)
   }
 }
 
 async function protectEndpoints(deps: PermissionHookDeps, event: Evaluation) {
   const method = event.metadata?.method
   const known = typeof method === "string" ? method.toUpperCase() : "GET"
-  if (known === "GET" || known === "HEAD") return
-  const state = await enforced(deps, event)
-  if (!state || state.mode === "off") return
+  const write = known !== "GET" && known !== "HEAD"
   const http = event.resources.map((url) => request(known, url, undefined))
+  if (!write && !http.some(isLocalApi)) return
+  const state = await enforced(deps, event)
+  if (!state) return
+  const api = serverApiRequest(http, state.loaded.protect.ports)
+  if (api) return deny(deps.stats, event, "self-protect", serverApiVerdict(api).reason)
+  if (!write || state.mode === "off") return
   const verdict = decide({ argv: [], isRemote: false, http }, state.loaded.rules, "strict")
   if (verdict.decision !== "allow") deny(deps.stats, event, verdict.ruleId!, verdict.reason!)
 }

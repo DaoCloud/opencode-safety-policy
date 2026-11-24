@@ -274,6 +274,12 @@ export class Harness {
     }
   }
 
+  /** The URL of the running `opencode serve`. */
+  get url() {
+    if (!this.server) throw new Error("opencode serve is not running")
+    return this.server.url
+  }
+
   async stop() {
     const server = this.server
     if (!server) return

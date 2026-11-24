@@ -1,7 +1,7 @@
 /** P0 end to end through a real `opencode serve`: shell guard, approvals, SSH, self-protection, modes, Code Mode. */
 
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test"
-import { readFileSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import {
   E2E_ENABLED,
@@ -93,6 +93,57 @@ describe.skipIf(!E2E_ENABLED)("self-protection", () => {
     expect(write.result).toContain("[safety-policy:self-protect]")
     expectDenied(await h.shell("echo {} > opencode.json"), "self-protect")
     expect(readFileSync(file, "utf8")).toBe(before)
+  })
+})
+
+describe.skipIf(!E2E_ENABLED)("server credentials and api", () => {
+  const SECRET = "E2E-SERVER-SECRET"
+  let secret: string
+  let other: ReturnType<typeof Bun.serve>
+
+  beforeAll(() => {
+    // A `service*.json` that no OpenCode channel reads, so the Server ignores it.
+    const dir = path.join(h.root, "xdg/state/opencode")
+    mkdirSync(dir, { recursive: true })
+    secret = path.join(dir, "service-ocsp-e2e.json")
+    writeFileSync(secret, JSON.stringify({ password: SECRET }))
+    other = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("OTHER-API-OK") })
+  })
+
+  afterAll(() => {
+    other?.stop(true)
+  })
+
+  test("denies reading credentials, the database and process environments in off mode", async () => {
+    await setMode("off")
+    try {
+      const db = path.join(h.root, "xdg/data/opencode/opencode.db")
+      for (const command of [`cat ${secret}`, `head -c 64 ${db}`, "tr '\\0' '\\n' < /proc/$PPID/environ"]) {
+        const call = await h.shell(command)
+        expectDenied(call, "self-protect")
+        expect(call.result).not.toContain(SECRET)
+      }
+    } finally {
+      await setMode("strict")
+    }
+  })
+
+  test("denies the read and grep tools on a credential file", async () => {
+    const read = await h.call("read", { path: secret })
+    const grep = await h.call("grep", { pattern: "password", path: path.relative(h.project, secret) })
+    for (const call of [read, grep]) {
+      expect(call.result).toContain("[safety-policy:self-protect]")
+      expect(call.result).not.toContain(SECRET)
+    }
+  })
+
+  test("denies the Server API through curl and webfetch but not another local /api", async () => {
+    expectDenied(await h.shell(`curl -s ${h.url}/api/session`), "self-protect")
+    const fetched = await h.call("webfetch", { url: `${h.url}/api/session`, format: "text" })
+    expect(fetched.result).toContain("[safety-policy:self-protect]")
+    const allowed = await h.shell(`curl -s http://127.0.0.1:${other.port}/api/v1/query`)
+    expectAllowed(allowed)
+    expect(allowed.result).toContain("OTHER-API-OK")
   })
 })
 

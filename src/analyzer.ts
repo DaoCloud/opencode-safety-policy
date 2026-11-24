@@ -34,7 +34,14 @@ import { extractHttp, isReadOnlyQuery, type HttpExtraction, type HttpSources } f
 import { effectiveCwd, expandPathArgs, resolveCanonicalPath } from "./path-util"
 import { ALLOW, combine, decide, type RuleSet, type Verdict } from "./rules"
 import type { MatchInput } from "./rules/matcher"
-import { protectedTarget, selfProtectVerdict, type ProtectedPaths } from "./rules/self-protect"
+import {
+  protectedTarget,
+  secretTarget,
+  secretVerdict,
+  selfProtectVerdict,
+  type ProtectedPaths,
+} from "./rules/self-protect"
+import { serverApiRequest, serverApiVerdict } from "./rules/server-api"
 import { isFileWrite, isReadOnly, writesFile, type ReadOnlyList } from "./rules/ssh-policy"
 import type { Language } from "./script-scanner"
 import { isDynamicName, tokenize, type OpaqueReason } from "./tokenizer"
@@ -144,9 +151,10 @@ export function analyze(input: AnalyzeInput): Analysis {
   const read = cachedReader(input.readFile ?? readScriptFile)
   const scope: Scope = { home, mode: input.mode, walk, read, written: new Map() }
   const entries = expandAtoms(unwrap(tokenize(input.command), walk), [cwd], scope)
-  const atoms = entries.map(({ atom, candidates, dirs, verdict: fixed }) => {
+  const atoms = entries.map((entry) => {
+    const { atom, candidates, verdict: fixed } = entry
     const judged = fixed ?? judge(atom, candidates, input)
-    const verdict = judged.decision === "deny" || atom.prescan ? judged : (selfProtect(atom, dirs, input, home) ?? judged)
+    const verdict = judged.decision === "deny" ? judged : (selfProtect(entry, input, home) ?? judged)
     const report: AtomReport = {
       argv: atom.argv,
       isRemote: atom.isRemote,
@@ -421,10 +429,17 @@ export function readScriptFile(file: string): string {
   }
 }
 
-function selfProtect(atom: Atom, dirs: string[], input: AnalyzeInput, home: string): Verdict | undefined {
-  if (!input.protect) return undefined
+/** Self-protection (design 4.2). Atoms found by the prescan are only checked for the local Server API. */
+function selfProtect({ atom, candidates, dirs }: Entry, input: AnalyzeInput, home: string): Verdict | undefined {
+  const { protect } = input
+  if (!protect) return undefined
+  const api = atom.isRemote ? undefined : serverApiRequest(candidates.flatMap((c) => c.input.http ?? []), protect.ports)
+  if (api) return serverApiVerdict(api)
+  if (atom.prescan) return undefined
   for (const dir of dirs) {
-    const target = protectedTarget(atom, dir, input.protect, input.readOnly, home)
+    const secret = secretTarget(atom, dir, protect, home)
+    if (secret !== undefined) return secretVerdict(secret)
+    const target = protectedTarget(atom, dir, protect, input.readOnly, home)
     if (target !== undefined) return selfProtectVerdict(target)
   }
   return undefined
