@@ -460,7 +460,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 | 手工试用 | 真实模型下的拦截、审批与模式切换 | [手工试用指南](./opencode-safety-policy-manual-test.md)，在各阶段 E2E 和升级 OpenCode 后执行 |
 
 - 每次升级 OpenCode 版本：重跑 `bun run test:e2e` 和 Spike S3–S9，并按手工试用指南走一遍，通过后再放宽 `peerDependencies`。
-- CI（`.github/workflows/ci.yml`）：PR 和 push 到 `main` 时跑类型检查、`bun test`、`bun run test:e2e` 和 `bun run test:system`，E2E 和系统级部署固定用 OpenCode 2.4.1，升级 OpenCode 时同步修改。每天定时用最新版 OpenCode 跑一次，提前发现上游变更。推送 `v*` tag 时 `release.yml` 先跑同一套测试，再发布 GitHub Release。
+- CI（`.github/workflows/ci.yml`）：PR 和 push 到 `main` 时跑类型检查、`bun test`、`bun run test:e2e` 和 `bun run test:system`。前三项在 Linux 和 macOS 上各跑一次，系统级部署只在 Linux 上跑。E2E 和系统级部署固定用 OpenCode 2.4.1，升级 OpenCode 时同步修改。每天定时用最新版 OpenCode 跑一次，提前发现上游变更。推送 `v*` tag 时 `release.yml` 先跑同一套测试，再发布 GitHub Release。
 - 不写只验证常量、默认值或类型的测试。
 
 ## 12. 待决事项

@@ -56,7 +56,7 @@ curl -fL -O "$BASE/daocloud-opencode-safety-policy-$VERSION.tgz" -O "$BASE/SHA25
 把这两个文件拷到目标机器，校验后解压。OpenCode 不能直接从 tarball 安装插件，需要先解压成目录：
 
 ```bash
-sha256sum -c SHA256SUMS
+sha256sum -c SHA256SUMS   # macOS 上用 shasum -a 256 -c SHA256SUMS
 mkdir -p ~/.config/opencode/safety-policy
 tar xzf daocloud-opencode-safety-policy-$VERSION.tgz -C ~/.config/opencode/safety-policy --strip-components=1
 ```
@@ -98,8 +98,32 @@ sudo tar --no-same-owner -xzf daocloud-opencode-safety-policy-$VERSION.tgz -C /e
 - `policies` 只允许加载本插件。其他插件都不会加载，项目中伪造的同 ID 插件也一样。如果还要使用其他受信任的插件，在 `policies` 末尾为它追加一条 `allow`。
 - 不要放到会被自动加载的 `/etc/opencode/plugins/` 下，原因同上。
 - 要禁止用户在运行时切换模式，在 `/etc/profile.d/opencode-safety.sh` 中加入 `export OPENCODE_SAFETY_LOCK_MODE=strict`。
-- macOS 上的目录是 `/Library/Application Support/opencode/`。如果通过 MDM 下发配置，`package` 和 `resource` 都要写绝对路径。
 - 升级时先删除 `/etc/opencode/safety-policy`，再解压新版本，然后重启 OpenCode。
+
+### macOS
+
+在线安装和离线安装与 Linux 相同，用户目录同样是 `~/.config/opencode/` 和 `~/.cache/opencode/`。
+
+系统级部署的流程也相同，区别如下：
+
+- 系统配置目录是 `/Library/Application Support/opencode/`，把上文的 `/etc/opencode` 都换成它。路径中有空格，命令中要加引号：
+
+  ```bash
+  SYS="/Library/Application Support/opencode"
+  sudo mkdir -p "$SYS/safety-policy"
+  sudo tar --no-same-owner -xzf daocloud-opencode-safety-policy-$VERSION.tgz -C "$SYS/safety-policy" --strip-components=1
+  ```
+
+  `policies` 中的 `resource` 相应改为 `/Library/Application Support/opencode/safety-policy`。
+- `OPENCODE_SAFETY_LOCK_MODE` 写到 `/etc/zshenv`，zsh 是 macOS 的默认 shell，每次启动都会读取它。用户的 shell 是 bash 时写到 `/etc/profile`。OpenCode Desktop 启动时会从用户的登录 shell 读取环境变量，所以同样生效。
+- 通过 MDM 下发配置（`ai.opencode.managed.plist`）时，相对路径以 `/Library/Managed Preferences/` 为基准，`package` 和 `resource` 都要写插件目录的绝对路径。
+
+已知限制：
+
+- 插件探测不到 Server 正在监听的端口（Linux 上读取 `/proc`），所以本机任意端口上的 `/api` 请求都会被拦截，`kubectl proxy`、Prometheus 等其他服务也不例外。
+- 文件系统默认不区分大小写，见[安全边界](#安全边界)。
+
+CI 在 macOS 上运行单元测试和 E2E 测试。系统级部署只在 Linux 容器中验证过。
 
 ### 确认安装
 
@@ -198,6 +222,7 @@ bun ~/.config/opencode/safety-policy/cli.ts test --mode relaxed "ssh node1 'kube
 - 用户在 TUI 中直接输入的 `!命令` 不经过插件。
 - OpenCode 的自动审批会放行 `ask`，但不会放行 `deny`。无人值守时绝不能放行的操作，要配置成 `deny`。
 - 远端已有脚本（如 `ssh host /opt/cleanup.sh`）的内容不可见，插件按未知远端命令处理。
+- macOS 的文件系统默认不区分大小写，但规则和受保护路径都按大小写敏感比较。`~/.config/OpenCode/` 这类改了大小写的路径和 `KUBECTL delete` 这类改了大小写的命令名可以绕过检查。
 
 完整说明见设计文档 [1.2](docs/opencode-safety-policy-design.md#12-非目标与安全边界)。
 
@@ -207,7 +232,7 @@ bun ~/.config/opencode/safety-policy/cli.ts test --mode relaxed "ssh node1 'kube
 bun install
 bun run typecheck
 bun test              # 单元测试
-bun run test:e2e      # 需要本机的 opencode
+bun run test:e2e      # 需要本机的 opencode。macOS 上先执行 sudo ifconfig lo0 alias 127.0.0.2 up
 bun run test:system   # 需要 docker 和本机的 opencode，在一次性容器中验证系统级部署
 ```
 
