@@ -76,6 +76,7 @@
 - `server.test.ts`：P0-E2E 中 shell 拦截、审批、SSH、自保护、模式切换与 TTL 回落、Code Mode、LOCK、`session_inbox` 与 LLM 回合数。
 - `analyzer.test.ts`：P1-1、P1-2 的判定在真实 `opencode serve` 上的结果，脚本输入用项目中的真实文件。
 - `tui.test.ts`：`/safety` 补全、命令面板、状态与切换 Toast、强制审批的原因 Toast、LOCK 下拒绝切换。
+- `install.test.ts`：OpenCode 从 `git+file://` 安装工作区的一次提交，代替从 GitHub tag 安装。
 - 新增危险命令用例时，先确认命令名在替身列表中，不要在命令里写 `/bin/rm` 这类绝对路径。本机存在 `/data`。
 
 ## 5. 阶段总览
@@ -437,10 +438,11 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### R-3 打包
 
 - 设计：8 第 1、3 点
-- [ ] `bun pm pack --dry-run` 检查 `files` 列表
-- [ ] 在干净环境用 tarball 离线安装并加载成功
-- [ ] OpenCode 从 git ref 安装后 server、TUI 都能加载，且不安装 peer 依赖
-- [ ] 推送 `v*` tag 时跑完 CI 的全部测试，再把 tgz 和 `SHA256SUMS` 附到 GitHub Release，tag 与 `package.json` 的版本不一致时失败
+- [x] `bun pm pack --dry-run` 检查 `files` 列表
+- [x] 在干净环境用 tarball 离线安装并加载成功
+- [x] OpenCode 从 git ref 安装后 server、TUI 都能加载，且不安装 peer 依赖
+- [x] 推送 `v*` tag 时跑完 CI 的全部测试，再把 tgz 和 `SHA256SUMS` 附到 GitHub Release，tag 与 `package.json` 的版本不一致时失败
+- 实现：tarball 安装由 R-2 的 `test/system/` 覆盖。git 安装由 `test/e2e/install.test.ts` 覆盖，去掉 `peerDependenciesMeta` 时该用例失败。`.github/workflows/release.yml` 以 `workflow_call` 复用 `ci.yml` 的全部 job。
 - commit：`chore: prepare package for publishing`
 
 ---
@@ -457,7 +459,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 | 手工试用 | 真实模型下的拦截、审批与模式切换 | [手工试用指南](./opencode-safety-policy-manual-test.md)，在各阶段 E2E 和升级 OpenCode 后执行 |
 
 - 每次升级 OpenCode 版本：重跑 `bun run test:e2e` 和 Spike S3–S9，并按手工试用指南走一遍，通过后再放宽 `peerDependencies`。
-- CI（`.github/workflows/ci.yml`）：PR 和 push 到 `main` 时跑类型检查、`bun test`、`bun run test:e2e` 和 `bun run test:system`，E2E 和系统级部署固定用 OpenCode 2.4.1，升级 OpenCode 时同步修改。每天定时用最新版 OpenCode 跑一次，提前发现上游变更。
+- CI（`.github/workflows/ci.yml`）：PR 和 push 到 `main` 时跑类型检查、`bun test`、`bun run test:e2e` 和 `bun run test:system`，E2E 和系统级部署固定用 OpenCode 2.4.1，升级 OpenCode 时同步修改。每天定时用最新版 OpenCode 跑一次，提前发现上游变更。推送 `v*` tag 时 `release.yml` 先跑同一套测试，再发布 GitHub Release。
 - 不写只验证常量、默认值或类型的测试。
 
 ## 12. 待决事项
@@ -500,4 +502,4 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [ ] P2-E2E
 - [ ] R-1 README
 - [x] R-2 系统级部署验证
-- [ ] R-3 打包
+- [x] R-3 打包

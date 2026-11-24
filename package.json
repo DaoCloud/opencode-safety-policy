@@ -26,6 +26,11 @@
   "peerDependencies": {
     "@opencode/plugin": "^2.3.0"
   },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@opencode/plugin": "2.3.2",
     "@tsconfig/bun": "1.0.12",
