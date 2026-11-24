@@ -374,7 +374,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### P2-1 自保护扩展
 
 - 设计：1.2、4.2 最后一行（防绕过 `/safety` 与审批）
-- 要点：拦截读取 `service.json`；拦截读写 OpenCode DB（含 `-wal`/`-shm` 和 `OPENCODE_DB` 指定的路径）以及 `sqlite3` 访问；拦截发往回环地址 `/api/` 的请求。
+- 要点：拦截读写 config 目录和 state 目录下的 `service*.json`、`/proc/<pid>/environ`；拦截读写 OpenCode DB（含 `-wal`/`-shm`/`-journal` 和 `OPENCODE_DB` 指定的路径）以及 `sqlite3` 访问；拦截发往本机地址上 Server 端口 `/api/` 的请求，端口取当前进程的监听端口和登记的后台服务端口，探测不到时不限端口。
 - commit：`feat: protect server credentials, database and api`
 
 ### P2-2 evaluate 的 deny 级复检
@@ -405,7 +405,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### P2-E2E
 
 - [ ] 按[手工试用指南](./opencode-safety-policy-manual-test.md)用真实模型走一遍，本阶段新增的拦截行为已补进用例
-- [ ] `cat ~/.config/opencode/service.json`、`sqlite3 <db> ...`、`curl http://127.0.0.1:<port>/api/rpc/...` 被拦截
+- [ ] `cat <config>/service.json`、`cat <state>/service.json`、`cat /proc/<server pid>/environ`、`sqlite3 <db> ...`、`curl http://127.0.0.1:<port>/api/rpc/...` 被拦截，其他端口的 `/api/` 不受影响
 - [ ] TUI 中，插件强制的审批会弹出原因 Toast
 - [ ] 审计日志字段完整，日志路径不可写时插件仍正常工作
 
