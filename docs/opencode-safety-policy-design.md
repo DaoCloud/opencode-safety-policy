@@ -238,13 +238,28 @@
   │       -c/-e 内联代码与本地脚本由 Stage 3.5 预扫
   │
   ├─► Stage 3.5: HTTP/REST 写请求提取 & 轻量脚本预扫（HttpCommandExtractor & ScriptScanner）
-  │     • 对 curl / wget / http（HTTPie）提取 HTTP Method、目标 URL 与请求体片段：
-  │       - 兼容 -X POST、-XPOST（连写）、--request=DELETE、-T/--upload-file，
-  │         以及带 -d/--data/--data-raw/--data-binary/--json/-F 的隐式 POST；
-  │       - 遇到 -K/--config（从外部配置文件读方法/URL）时，若文件不可静默解析则走 opaque fail-closed；
-  │       - 对照 Redfish（/redfish/v1/）、UFM（/ufmRest/）、NICo API 及用户配置的
-  │         protectedEndpoints（BMC 网段、UFM VIP、NICo VIP）做读写判定：
-  │         GET 查询放行，非 GET 写操作按风险等级直接 deny 或 ask。
+  │     • 对 curl / wget / http / https（HTTPie）提取每个请求的 method、URL 与请求体：
+  │       - curl：-X/--request（含 -XPOST、--request=DELETE）优先，其次 -I 为 HEAD、-G 为 GET、
+  │         -T/--upload-file 为 PUT，带 -d/--data*/--json/-F/--form* 时为 POST，否则为 GET；
+  │         按 -:/--next 分组，--expand-* 视同对应选项；@file、<file 形式的请求体按候选工作目录
+  │         读入（读取范围同 3.2），@- 取 stdin；-K/--config 文件按 curl 语法展开后继续解析；
+  │       - wget：--method 优先，--post-data/--post-file 为 POST，--body-data/--body-file 为请求体，
+  │         -e/--execute 与 --config 中的 wgetrc 指令同样生效，-i/--input-file 读取 URL 列表；
+  │       - HTTPie：首个位置参数全为字母且后面还有 URL 时视为 METHOD；否则有数据项（=、:=、@ 等）、
+  │         --raw 或 stdin 数据时为 POST。OpenCode 以 /dev/null 作为 shell 的 stdin，未带 -I 时
+  │         `http URL` 也会读到空的 stdin 并发 POST，因此按 POST 判定；
+  │       - method 或请求体在运行期才确定（-X "$M"、-d "$BODY"、位置参数中的变量）时视为未知：
+  │         未知 method 按写请求处理，未知请求体视为命中任何 bodyPatterns（fail-closed）。
+  │         -K/--config 文件不可读或路径在运行期才确定时按 opaque fail-closed；
+  │       - URL 以原文与规范化形式各匹配一次：补全 scheme，按 WHATWG URL 解析点段、%2e 与反斜杠，
+  │         路径做百分号解码并折叠重复的 /，主机名转小写并去掉末尾的点；
+  │       - 对照 Redfish（/redfish/v1/）、UFM（/ufmRest/）规则与用户配置的 protectedEndpoints
+  │         （BMC 网段、UFM VIP、NICo VIP）判定：GET/HEAD 查询不命中 HTTP 写规则，写请求按规则
+  │         等级处置；发往 protectedEndpoints 的任意写请求命中内置规则 protected-endpoint-write（high）。
+  │         Redfish 登录（POST /redfish/v1/SessionService/Sessions）不算写操作；
+  │       - 已知局限：主机名在运行期才确定（https://$BMC/...）时无法比对 protectedEndpoints；不做
+  │         DNS 解析，主机名与 IP 只按字面比对；--resolve/--connect-to、~/.curlrc、~/.wgetrc 与
+  │         curl --variable 展开的内容不纳入分析。
   │     • 本地脚本与解释器代码预扫（ScriptScanner）：
   │       - shell 以本地文件为脚本参数（bash foo.sh、sh -e foo.sh）时，与 bash < foo.sh 一样读入正文
   │         按执行位置递归分析（读取范围与不可读的判定见 3.2）。source / . 与直接执行（./foo.sh）
@@ -255,8 +270,11 @@
   │         及全部由字面量组成的列表（["rm", "-rf", "/data"]）按 shell 命令分析，字面量中的插值（f-string 的
   │         {d}、ruby 的 #{d}、JS 模板字符串的 ${d}）按 shell 变量处理；文件删除 API
   │         （shutil.rmtree、os.remove、fs.rmSync、FileUtils.rm_rf 等）的字面量路径按等价的 rm 分析；
-  │         命中敏感端点 + 写动作关键字（如 /redfish/v1/ + InsertMedia/ComputerSystem.Reset/
-  │         BootSourceOverride/PATCH/POST）时按 HTTP 规则判定。预扫得到的命令只按规则判定，
+  │         代码中的端点字面量（含 :// 的 URL、含 /redfish/ 或 /ufmRest 的路径、主机名或 IP）各视为
+  │         一个 HTTP 请求，请求体为整段代码，按 HTTP 规则判定：调用 post/put/patch/delete 方法且
+  │         首个参数就是该字面量时取对应 method；代码中有其他写动作（requests.request("POST", u)、
+  │         Net::HTTP::Post、method: "PATCH" 等）或 URL 含 /Actions/ 时 method 视为未知，否则为 GET。
+  │         urlopen(url, data=...) 等不带写动作关键字的写请求无法识别。预扫得到的命令只按规则判定，
   │         无法解析、动态命令名、远端未知命令与自保护不对其生效；
   │       - 可读的本地脚本正文未命中规则时，strict 下 ask（执行前内容可能被修改，预扫也不完整），
   │         relaxed 下放行；脚本路径在运行期才能确定或脚本不存在时走 TOCTOU fail-closed；
@@ -320,6 +338,12 @@
     - `pattern` 正则按字面匹配，不识别缩写。在正则里写长选项的规则需自行覆盖缩写形态。
   - `pattern` 作用于 `命令名 参数1 参数2 …`。本机路径参数已展开为绝对路径。带 `command` 的规则还会把 heredoc / here-string 正文（空白折叠为单个空格）接在参数后再试一次，如 `psql <<SQL DROP TABLE x`。不带 `command` 的规则不看 stdin，避免 `cat <<EOF > x.sh` 写脚本时误报。
   - `scope` 为 `local` / `remote` 时，只匹配本机或远端原子命令。
+  - `http` 匹配 curl / wget / HTTPie 以及解释器预扫提取的 HTTP 请求（见 Stage 3.5），任一请求同时满足各项即命中：
+    - `methods` 列出的 method 之一，大小写不敏感。method 未知时视为命中。
+    - `urlPatterns` 任一正则匹配 URL 原文或规范化形式。
+    - `bodyPatterns` 任一正则匹配请求体。请求体未知时视为命中。
+    - `urlPatterns` 与 `bodyPatterns` 按大小写不敏感编译。
+    - 只有 `http` 的规则只看 HTTP 请求，不匹配命令名与参数。
 - 非 shell 工具（MCP 工具、`opencode_worktree_remove` 等）复用同一套规则：
   - 工具调用视为一条本机原子命令，`argv` 为 `[<工具 ID>, <紧凑 JSON 输入>]`。工具 ID 是 OpenCode 的注册名，带 namespace 时形如 `<namespace>_<name>`，例如 MCP 工具 `github_delete_repository`、内置 `opencode_worktree_remove`。
   - 只有 `command` 列出该工具 ID 的规则才会匹配工具调用，`pattern` 作用于 `<工具 ID> <JSON>`，如 `opencode_worktree_remove {"directory":"/repo/wt","force":true}`。不带 `command` 的规则不匹配工具调用，避免对写入文件内容的 `edit` 等工具误报。
@@ -339,8 +363,8 @@
 | **`rules/cloud-native.json`**<br>云原生 / Kubernetes / 容器 | `kubectl delete`/`del`、`kubectl drain`、`kubectl cordon`、`kubectl taint`、`kubectl replace --force`、`kubectl rollout undo`、`kubectl scale --replicas=0`、`kubectl patch`（含删除/清空操作）、`helm uninstall`/`delete`、`etcdctl del`、`velero delete`；`docker`/`nerdctl`/`podman`/`crictl`/`ctr` 的 `rm`/`rmi`/`stop`/`kill`/`prune`/`rmp`/`compose down` |
 | **`rules/linux-host.json`**<br>Linux 文件、磁盘与服务 | **致命/高危（`critical`/`high`）**：`rm -rf /` / 系统关键路径（`/etc`、`/var`、`/usr`、`/boot`、`/home`、`/data`、`/*`）或远端 SSH 任意 `rm`、`shred`、`find ... -delete`/`-exec rm`、`mkfs*`、`fdisk`、`parted`、`wipefs`、`dd of=/dev/...`、`lvremove`/`vgremove`/`pvremove`、`mdadm --stop/--zero-superblock`、`zfs destroy`、`reboot`/`shutdown`/`poweroff`/`halt`/`init 0/6`、`systemctl stop/disable/mask`、`chmod -R 777 /`、`userdel`、`crontab -r`；<br>**中危（`medium`，`strict` 下 `ask` 减少误报）**：本机工作区或 `/tmp` 下非递归根路径的常规 `rm`/`rmdir`/`unlink`、普通进程 `kill`/`pkill` |
 | **`rules/spectrum-cumulus.json`**<br>NVIDIA Spectrum 交换机（Cumulus Linux） | **NVUE**：`nv set`、`nv unset`、`nv config apply`/`detach`/`replace`、`nv action reboot`/`reset`/`install`/`upgrade`；<br>**NCLU & 系统**：`net add`/`del`/`commit`/`abort`、`ifreload -a`、`systemctl stop/restart switchd`、`onie-select`（重装 NOS）、修改 `/etc/network/interfaces` 或 `/etc/nvue.d/` |
-| **`rules/ib-ufm.json`**<br>NVIDIA InfiniBand 交换机 & UFM | **IB 交换机（NVOS / MLNX-OS）**：`nv set/unset/config apply/action ...`、`reload`、`reset factory`、`shutdown`、`no interface`、`image boot/install`、`configuration delete`（经 `ssh` 或管道喂入多行 CLI）；<br>**主机侧 IB/GPU 工具**：`ibportstate disable/reset`、`mlxconfig set`、`flint`/`mlxburn`/`mstfwreset`、`opensm` 启停、`nvidia-smi --gpu-reset`；<br>**UFM 服务与 REST API**：`ufmd stop/restart`、`systemctl stop ufm-enterprise`、`ufm_ha_cluster` 切换、非 `GET` 请求发往 `/ufmRest/actions`（端口隔离/节点重启/固件升级）或 `/ufmRest/resources/pkeys` |
-| **`rules/oob-redfish.json`**<br>主机带外管理（Redfish / BMC / IPMI / NICo） | **CLI**：`ipmitool power off/reset/cycle`、`ipmitool chassis bootdev pxe/cdrom`、`ipmitool mc reset`、`ipmitool raw`、`ipmitool sensor thresh`/`sdr fill`/`fru edit`/`chassis policy`/`sel clear`/`sel delete` 等 BMC 写操作、`redfishtool` 写子命令；<br>**Redfish REST API（防重装机/断电/刷固件）**：对 `/redfish/v1/` 发起的非 `GET` 请求，重点拦截：<br>• `.../Actions/ComputerSystem.Reset`（强制断电/重启）<br>• `.../Actions/VirtualMedia.InsertMedia` / `EjectMedia`（挂载重装 ISO）<br>• `PATCH /redfish/v1/Systems/...` 含 `BootSourceOverrideTarget`（切换 PXE/CD 触发重装）<br>• `.../Actions/Manager.Reset` / `ResetToDefaults`（重置 BMC）<br>• `.../UpdateService/Actions/UpdateService.SimpleUpdate`（刷固件）<br>**管理端点兜底**：发往用户配置的 `protectedEndpoints`（BMC 网段、NICo VIP、UFM VIP）的任意 `POST`/`PUT`/`PATCH`/`DELETE` 请求默认 `deny`（致命动作）或 `ask` |
+| **`rules/ib-ufm.json`**<br>NVIDIA InfiniBand 交换机 & UFM | **IB 交换机（NVOS / MLNX-OS）**：`nv set/unset/config apply/action ...`、`reload`、`reset factory`、`shutdown`、`no interface`、`image boot/install`、`configuration delete`（经 `ssh` 或管道喂入多行 CLI）；<br>**主机侧 IB/GPU 工具**：`ibportstate disable/reset`、`mlxconfig set`、`flint`/`mlxburn`/`mstfwreset`、`opensm` 启停、`nvidia-smi --gpu-reset`；<br>**UFM 服务与 REST API**：`ufmd stop/restart`、`systemctl stop ufm-enterprise`、`ufm_ha_cluster` 切换、发往 `/ufmRest/`（含 `/ufmRestV2/` 等）的非 `GET`/`HEAD` 请求（`high`），重点是 `/ufmRest/actions`（端口隔离/节点重启/固件升级）与 `/ufmRest/resources/pkeys` |
+| **`rules/oob-redfish.json`**<br>主机带外管理（Redfish / BMC / IPMI / NICo） | **CLI**：`ipmitool power off/reset/cycle`、`ipmitool chassis bootdev pxe/cdrom`、`ipmitool mc reset`、`ipmitool raw`、`ipmitool sensor thresh`/`sdr fill`/`fru edit`/`chassis policy`/`sel clear`/`sel delete` 等 BMC 写操作、`redfishtool` 写子命令；<br>**Redfish REST API（防重装机/断电/刷固件）**：对 `/redfish/v1/` 发起的非 `GET`/`HEAD` 请求默认 `high`（登录 `SessionService/Sessions` 除外），以下动作为 `critical`：<br>• `.../Actions/ComputerSystem.Reset`、`Chassis.Reset`（强制断电/重启）<br>• `.../Actions/VirtualMedia.InsertMedia` / `EjectMedia`，或直接写 `VirtualMedia/<id>` 资源（挂载重装 ISO）<br>• `PATCH`/`PUT`/`POST /redfish/v1/Systems/...` 且请求体含 `BootSourceOverride`（切换 PXE/CD 触发重装）<br>• `.../Actions/Manager.Reset` / `ResetToDefaults`（重置 BMC）<br>• `/redfish/v1/UpdateService` 下的写请求（刷固件）<br>**管理端点兜底**：配置 `protectedEndpoints`（BMC 网段、NICo VIP、UFM VIP）后，内置规则 `protected-endpoint-write`（`high`）匹配发往这些主机的任意非 `GET`/`HEAD` 请求，`strict` 下 `deny`、`relaxed` 下 `ask`；同时命中上面的 `critical` 规则时按 `critical` 处置。NICo API 只通过 `nicoHosts` 覆盖 |
 | **`rules/opencode-tools.json`**<br>OpenCode 内置工具与 MCP 工具 | `opencode_worktree_remove` 带 `force: true`（丢弃未提交的修改，`high`）。MCP 写操作按 4.1 的工具规则写入 `rulesFile` 或 `extraDeny` / `extraAsk` |
 | **`rules/network-db.json`**<br>通用网络 / 数据库 | `ip link set ... down`、`ip addr flush/del`、`ip route flush/del`、`iptables -F/-X`、`nft flush`、`nmcli ... delete/down`、`rsync --delete`；`DROP DATABASE`/`DROP TABLE`/`TRUNCATE`/`FLUSHALL`/`FLUSHDB` |
 | **SSH 管道、混淆、内置破坏工具与防自篡改** | 管道/重定向/heredoc 喂给 `ssh ... sh/bash/python`、`base64 -d \| sh`、`eval`、动态命令名 / 本地脚本 TOCTOU；内置 `opencode_worktree_remove`（`opencode` namespace，仅在 Code Mode 中可用，内部以 `action: "edit"` 审批；`force: true` 见 `rules/opencode-tools.json`）；Code Mode `fetch` 发往受保护端点的非 `GET`/`HEAD` 写请求及重定向默认 `deny`；<br>**防自篡改**：受保护路径为本插件包目录、系统配置目录（Linux `/etc/opencode/`，macOS `/Library/Application Support/opencode/`）、全局配置目录（`OPENCODE_CONFIG_DIR`，默认 `$XDG_CONFIG_HOME/opencode/` 即 `~/.config/opencode/`）、`OPENCODE_CONFIG` 指定的文件、任意位置的 `opencode.json`/`opencode.jsonc` 与 `.opencode/` 目录（豁免 plan 模式写计划文件的 `~/.opencode/plan/`）以及 `rulesFile`，均经 `resolveCanonicalPath` 规范化后比对。① 文件写入：evaluate 中 `action === "edit"`（覆盖 `write`/`edit`/`patch`、Code Mode `Bun.write`/`Bun.file().delete()`/`unlink()`）命中即 `deny`；② shell：本机原子命令的输出重定向目标、参数或工作目录（含 `workdir`、`cd`、`env -C`）落在受保护路径内，且命令不在只读白名单（`ssh-readonly.json` + `sshReadOnlyAllowlist`）时 `deny`，重定向写文件时只读命令也不豁免；`rm`/`rmdir`/`mv` 的参数是固定受保护目录或文件的上级目录时同样 `deny`。读取不受限制。`/etc/network/interfaces`、`/etc/nvue.d/` 等主机网络配置不属于自保护范围；<br>**防绕过 `/safety` 与审批**：拦截对 `~/.config/opencode/service.json`（Server 密码）的读取，对 OpenCode 数据库（`~/.local/share/opencode/opencode*.db` 及 `-wal`/`-shm`，或 `OPENCODE_DB` 指定路径）的读写与 `sqlite3` 访问，以及 `curl`/`wget`/`http`/Code Mode `fetch` 发往本机回环地址（`localhost`/`127.0.0.1`/`::1`，不限端口）上 OpenCode Server `/api/` 路径的请求 |
@@ -348,7 +372,7 @@
 ### 4.3 远端 SSH 只读白名单（`rules/ssh-readonly.json`，用于 `strict` 模式减少误报）
 在 `strict` 模式下，通过 `ssh` 发往远端的命令如果是**纯只读巡检命令**且不带输出重定向，可直接放行（不弹窗），提高运维排障流畅度：
 - **Linux / K8s / 容器只读**：`cd`、`pwd`、`echo`、`ls`、`cat`、`head`、`tail`、`grep`、`rg`、`df`、`du`、`free`、`uptime`、`uname`、`hostname`、`whoami`、`id`、`ps`、`ss`、`ip addr/route/link show`、`systemctl status`、`journalctl`、`dmesg`、`kubectl get/describe/logs/top/cluster-info`、`docker ps/images/logs/inspect`、`crictl ps/pods/logs/inspect`。
-- **Spectrum / Cumulus / IB / GPU / UFM 只读**：`nv show`、`net show`、`nvidia-smi`（不含 `--gpu-reset`/`-r`）、`ibstat`、`ibv_devinfo`、`ibswitches`、`iblinkinfo`、`sminfo`、`mlxlink`、`ipmitool sensor/sdr/fru/sel list/chassis status/power status`，以及发往 Redfish / UFM 的纯 `GET` 查询。
+- **Spectrum / Cumulus / IB / GPU / UFM 只读**：`nv show`、`net show`、`nvidia-smi`（不含 `--gpu-reset`/`-r`）、`ibstat`、`ibv_devinfo`、`ibswitches`、`iblinkinfo`、`sminfo`、`mlxlink`、`ipmitool sensor/sdr/fru/sel list/chassis status/power status`，以及发往 Redfish / UFM 的纯 `GET` 查询（远端 `curl`/`wget`/`http` 的每个请求都是已知的 `GET`/`HEAD`、路径都在 `/redfish/` 或 `/ufmRest*/` 下，且不带 `-o`、`--cookie-jar`、`-O`、`--download` 等写本地文件的选项）。
   > 注：`ibdiagnet` 会向 `/var/tmp/ibdiagnet2` 写入大量诊断产物并执行全网扫描，**不放入**无条件只读白名单（默认在 `strict` 下走 `ask`，有需要可在 `sshReadOnlyAllowlist` 中按需显式加入）。
 - 文件格式为 `{ "commands": [ "<命令名> [子命令...]", ... ] }`，条目与 `sshReadOnlyAllowlist` 相同，是命令前缀，例如 `"kubectl get"`、`"ipmitool sel list"`、`"mlxlink"`。
 - 前缀从第一个位置参数开始逐词比较。`kubectl`、`docker`、`ipmitool` 会先跳过全局选项（`kubectl -n prod get pods`、`ipmitool -I lanplus -H bmc sel list`），其他命令的带值选项会被当作位置参数，因此不会命中多词条目。
@@ -364,7 +388,7 @@
 | 风险等级 / 场景 | `strict`（严格，默认） | `relaxed`（宽松） | `off`（关闭） |
 |---|---|---|---|
 | **致命破坏命令（`critical`）**（如 `rm -rf /`、`mkfs`、`dd of=/dev/`、`kubectl delete ns`、`onie-select`、Redfish `VirtualMedia.InsertMedia`/`ComputerSystem.Reset`/`BootSourceOverride`、`ipmitool power off`） | `deny`（硬阻断） | `deny`（仍硬阻断，可选配置降级为 `ask`） | `allow` |
-| **高危删除/停服/变更（`high`）**（远端 `rm`、`kubectl delete pod`、`docker stop`、`systemctl stop`、`nv config apply`、UFM REST 写请求） | `deny`（硬阻断） | `ask`（弹窗人工确认） | `allow` |
+| **高危删除/停服/变更（`high`）**（远端 `rm`、`kubectl delete pod`、`docker stop`、`systemctl stop`、`nv config apply`、UFM REST 写请求、发往 `protectedEndpoints` 的写请求） | `deny`（硬阻断） | `ask`（弹窗人工确认） | `allow` |
 | **中危本机清理/操作（`medium`）**（本机工作区/`/tmp` 常规 `rm`、普通进程 `kill`/`pkill`） | `ask`（弹窗人工确认，降低误报） | `allow` | `allow` |
 | **远端 SSH 只读命令** | `allow` | `allow` | `allow` |
 | **远端 SSH 未知/非只读命令** | `ask`（弹窗人工确认） | `allow`（除非命中高危规则） | `allow` |
@@ -564,6 +588,8 @@ opencode-safety-policy/       # 仓库根目录
   ]
 }
 ```
+
+`protectedEndpoints` 的三个键只用于分类，判定相同。每项是 IP（`10.20.0.10`、`fd00::1`）、CIDR（`10.10.0.0/16`、`fd00::/64`）或主机名（按字面比对，不支持通配符），不能带端口、路径或用户名。IPv4 条目也匹配 `::ffff:` 映射地址；`curl http://167772161/` 等非常规写法会先按 WHATWG URL 规范化为点分 IPv4 再比对。
 
 ---
 

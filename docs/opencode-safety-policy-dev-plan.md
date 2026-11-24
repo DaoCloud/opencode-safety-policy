@@ -318,13 +318,15 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 
 ### P1-3 HTTP 提取与受保护端点
 
-- 设计：3.1 Stage 3.5、4.2（oob-redfish、ib-ufm）、7（`protectedEndpoints`）
+- 设计：3.1 Stage 3.5、4.1（`http` 匹配）、4.2（oob-redfish、ib-ufm）、4.3、7（`protectedEndpoints`）
 - 产出：`src/http-extractor.ts`、matcher 的 `http` 支持、`oob-redfish.json` 与 `ib-ufm.json` 的 HTTP 规则、`test/http-script.test.ts`
 - 要点：
-  - 支持 `-X POST`、`-XPOST`、`--request=DELETE`、`-T`，以及 `-d`/`--json`/`-F` 隐含的 POST。
-  - 遇到 `-K` 且配置文件无法解析时，按 opaque 处理。
-  - 手写 IPv4/IPv6 CIDR 与主机名匹配，不引入依赖。
-  - `script-scanner.ts` 补充受保护端点 + 写动作关键字的预扫（Stage 3.5）。
+  - curl 支持 `-X POST`、`-XPOST`、`--request=DELETE`、`-T`、`-d`/`--json`/`-F` 隐含的 POST、`-:` 分组与 `-K` 配置文件；wget 支持 `--method`、`--post-*`、`--body-*`、`-e` 与 `--config`；HTTPie 未带 `-I` 时按 POST 判定。
+  - method 或请求体在运行期才确定时视为未知（fail-closed）。`-K`/`--config` 文件不可读时按 opaque 处理。
+  - `urlPatterns`、`bodyPatterns` 大小写不敏感，URL 原文与规范化形式各匹配一次。
+  - 手写 IPv4/IPv6 CIDR 与主机名匹配，不引入依赖。配置 `protectedEndpoints` 后追加内置规则 `protected-endpoint-write`（`high`）。
+  - 远端纯 `GET`/`HEAD` 的 Redfish/UFM 查询视为只读。
+  - `script-scanner.ts` 提取代码中的端点字面量与写动作关键字，生成 HTTP 请求按规则判定（Stage 3.5）。
 - commit：`feat: extract http write requests from curl and wget`
 
 ### P1-4 webfetch 与 Code Mode fetch
