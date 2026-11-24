@@ -420,7 +420,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### R-1 README
 
 - 设计：8、9 阶段 4
-- 内容：本机安装、私有 npm 发布、`/etc/opencode/safety-policy/` 托管与 `policies` 配置、离线安装、规则扩展方法、1.2 中的安全边界说明。
+- 内容：从 GitHub 在线安装、Release 发布、`/etc/opencode/safety-policy/` 托管与 `policies` 配置、离线安装、规则扩展方法、1.2 中的安全边界说明。
 - commit：`docs: add installation and usage guide`
 
 ### R-2 系统级部署验证（容器或 VM，不在共享机上做）
@@ -436,7 +436,11 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 
 ### R-3 打包
 
-- `npm pack --dry-run` 检查 `files` 列表；在干净环境用 tarball 离线安装并加载成功；`npm publish --dry-run` 检查私有源配置。
+- 设计：8 第 1、3 点
+- [ ] `bun pm pack --dry-run` 检查 `files` 列表
+- [ ] 在干净环境用 tarball 离线安装并加载成功
+- [ ] OpenCode 从 git ref 安装后 server、TUI 都能加载，且不安装 peer 依赖
+- [ ] 推送 `v*` tag 时跑完 CI 的全部测试，再把 tgz 和 `SHA256SUMS` 附到 GitHub Release，tag 与 `package.json` 的版本不一致时失败
 - commit：`chore: prepare package for publishing`
 
 ---
@@ -461,7 +465,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 | 事项 | 需在何时决定 | 现状 |
 |---|---|---|
 | 包名 | P0-1 之前 | 已定：`@daocloud/opencode-safety-policy` |
-| 私有 npm 源地址与发布权限 | R-3 之前 | 未定 |
+| 分发渠道 | R-3 之前 | 已定：不使用 npm 源。联网机器从 GitHub tag 安装（`github:DaoCloud/opencode-safety-policy#vX.Y.Z`），离线与系统级部署用 GitHub Release 中的 tgz |
 | 系统级部署验证用的容器/VM | R-2 之前 | 已定：一次性 Docker 容器 `ubuntu:24.04`（`test/system/Dockerfile`） |
 
 ## 13. 进度清单

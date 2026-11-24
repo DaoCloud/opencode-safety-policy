@@ -38,7 +38,7 @@
 1. **拦截高危破坏性命令**：防止误执行云原生（`kubectl delete`、`helm uninstall`、`docker stop/rm` 等）、Linux 主机（`rm -rf`、`mkfs`、`dd`、`reboot` 等）、网络与交换机（NVIDIA Spectrum/Cumulus Linux、NVIDIA InfiniBand/NVOS/MLNX-OS、UFM）以及主机带外管理（Redfish/BMC/IPMI/NICo 重装机、挂载 ISO、电源重置等）高危操作。
 2. **穿透远程、嵌套与 HTTP API 执行**：识别 Agent 通过 `ssh`、`sudo`、`bash -c`、`kubectl exec`、`docker exec`、`ansible` 等多层封装发往本机或远端的实际命令，识别通过管道/重定向/heredoc 向 `ssh` 喂脚本的场景，并解析通过 `curl`/`wget`/`httpie` 或内联/本地脚本发往 Redfish / UFM / NICo 等管理端点的写请求。
 3. **支持全局运行时模式切换**：支持在 `strict`（严格）/ `relaxed`（宽松）/ `off`（关闭）三种模式间快速切换，并支持跨 Session 持久化与可选 TTL 自动回落。
-4. **易于人工扩展与工程化分发**：规则采用声明式 `rules/*.json`（自带 `examples` 自动回归测试）并支持通过 `rulesFile` 外挂规则文件，无需改动代码即可增删规则；源码落在独立仓库 `DaoCloud/opencode-safety-policy` 根目录，支持私有 npm 源分发、离线交付以及系统级托管配置（`/etc/opencode/safety-policy/` + `/etc/opencode/opencode.json`）。
+4. **易于人工扩展与工程化分发**：规则采用声明式 `rules/*.json`（自带 `examples` 自动回归测试）并支持通过 `rulesFile` 外挂规则文件，无需改动代码即可增删规则；源码落在独立仓库 `DaoCloud/opencode-safety-policy` 根目录，支持从 GitHub 在线安装、离线交付以及系统级托管配置（`/etc/opencode/safety-policy/` + `/etc/opencode/opencode.json`）。
 
 ### 1.2 非目标与安全边界
 - **定位：防误操作护栏，而非强安全边界**。Agent 与 OpenCode Server 以同一 OS 用户运行，理论上可以读写该用户可访问的一切文件与本机端口。本插件的目标是拦截 Agent 的误操作和常见绕过形态，不承诺抵御刻意对抗的 Agent。硬底线依赖 `OPENCODE_SAFETY_LOCK_MODE`、OS 用户隔离与远端最小权限凭据。
@@ -548,10 +548,13 @@ opencode-safety-policy/       # 仓库根目录
   },
   "peerDependencies": {
     "@opencode/plugin": "^2.3.0"
+  },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": { "optional": true }
   }
 }
 ```
-> **零外部运行时依赖**：仅使用 Bun / Node 内置模块和宿主注入的 `@opencode/plugin`，确保内网/离线机房（如 GPU 集群装机环境）可以直接拷贝目录即用，无需联网 `npm install`。
+> **零外部运行时依赖**：仅使用 Bun / Node 内置模块和宿主注入的 `@opencode/plugin`，确保内网/离线机房（如 GPU 集群装机环境）可以直接拷贝目录即用，无需联网 `npm install`。`@opencode/plugin` 标为 optional peer，原因见 [8](#8-分发与部署方案适配-infra-integrate-场景) 第 1 点。
 >
 > **导入路径**：Server 侧 Promise API 从包根 `@opencode/plugin` 导入（不存在 `@opencode/plugin/promise` 子路径），TUI 侧从 `@opencode/plugin/tui` 导入，RPC 契约用 `@opencode/plugin/rpc` 的 `Rpc.define`，input/output 写成 JSON Schema，避免依赖 `effect`。OpenCode 2.x 的插件 API 仍在快速演进，`peerDependencies` 锁定到已验证的 `^2.3.0`，升级 OpenCode 时需回归 `test/plugin.test.ts`。
 
@@ -563,7 +566,7 @@ opencode-safety-policy/       # 仓库根目录
 {
   "plugins": [
     {
-      "package": "@daocloud/opencode-safety-policy",
+      "package": "github:DaoCloud/opencode-safety-policy#v0.1.0",
       "options": {
         "mode": "strict",
         "alwaysProtectSelf": true,
@@ -614,9 +617,11 @@ opencode-safety-policy/       # 仓库根目录
 
 插件源码位于独立仓库 `DaoCloud/opencode-safety-policy`，目标环境包含联网开发机与离线/内网 GPU 管理跳板机，推荐按场景提供三种分发方式：
 
-1. **开发机 / 联网团队（推荐）：发布到公司私有 npm 源**
-   - 在仓库根目录执行 `npm publish`（或 CI 在 tag 时自动发布）。
-   - 用户只需在 `~/.config/opencode/opencode.json` 添加包名，OpenCode 自动拉取并定期检查更新。
+1. **开发机 / 联网团队（推荐）：OpenCode 直接从 GitHub tag 安装**
+   - 不使用 npm 源。用户在 `~/.config/opencode/opencode.json` 的 `plugins` 中写 `"package": "github:DaoCloud/opencode-safety-policy#v0.1.0"`。OpenCode 用 npm 的 Arborist 拉取该 tag，按 `files` 打包后装入用户缓存目录（`~/.cache/opencode/npm/`），版本锁定到 tag 对应的 commit。
+   - 本机需要 `git` 并能访问 GitHub。升级时修改 tag 并重启 OpenCode。
+   - Arborist 默认会安装 `peerDependencies`。`@opencode/plugin` 由 OpenCode 在运行时提供，所以在 `peerDependenciesMeta` 中标为 optional，避免每次安装都额外拉取它的整棵依赖树（约 180 MB）。
+   - 插件装在用户可写的目录中，适合个人防误操作。需要强制基线时按第 2 点部署。
 2. **跳板机 / 管理主机（统一强制基线，重要：防自动发现冲突与同 ID 空插件劫持）**
    - **不要**同时将插件放入 `/etc/opencode/plugins/` 并在 `/etc/opencode/opencode.json` 中声明另一份拷贝——OpenCode Supervisor 先加载自动发现目录（`options: {}`），后加载的 `opencode.json` 条目会因 `Duplicate plugin ID` 失败并丢弃 `options`；而且仅靠自动发现加载的插件，可被项目级 `.opencode/opencode.json` 中的 `"plugins": ["-*"]` 卸载。
    - `Duplicate plugin ID` 只在同一 ID 来自不同路径时出现。显式配置自动发现目录本身（`"package": "./plugins/safety-policy"`）指向同一路径，显式条目替换自动发现条目并带上 `options`，不报错。仍推荐下面的非自动发现目录，避免目录里多出一份拷贝时插件静默退化为无 `options` 的默认配置。
@@ -640,7 +645,9 @@ opencode-safety-policy/       # 仓库根目录
    - **macOS MDM 托管特例**：若 macOS 通过 MDM `ai.opencode.managed.plist` 下发配置，OpenCode 会以 `/Library/Managed Preferences/` 为相对路径基准，此时 `package` 与 `policies[].resource` **均必须填写绝对路径** `"/Library/Application Support/opencode/safety-policy"`，不可使用相对路径 `"./safety-policy"`。
    - 如需禁止用户运行时关闭，可在跳板机 `/etc/profile.d/opencode-safety.sh` 中导出 `OPENCODE_SAFETY_LOCK_MODE=strict`。
    - 以上 Linux 部署行为（`options` 注入、`plugin.use` 白名单拦截同 ID 空壳插件、项目 `"-*"` 无法卸载、`Duplicate plugin ID` 的触发条件、`/etc/profile.d` 锁定）已在一次性容器中用 OpenCode 2.4.1 验证，见 `test/system/`。
-3. **离线机房交付**：可复用 `infra-integrate` 仓库的 `tools/offline-pack.sh`，或在本仓库用 `npm pack` 生成 tarball 随交付包分发
+3. **离线机房交付：GitHub Release 中的 tarball**
+   - 推送 `v*` tag 时，release workflow 先跑完 CI 的全部测试，再用 `bun pm pack` 生成 `daocloud-opencode-safety-policy-<版本>.tgz` 和 `SHA256SUMS`，附到同名 GitHub Release。也可以由 `infra-integrate` 仓库的 `tools/offline-pack.sh` 把它打进交付包。
+   - OpenCode 的 `package` 不支持 tarball URL 和 `file:` 写法，所以要先解压（`tar xzf <tgz> -C <目录> --strip-components=1`），再按本地目录注册。
    - 由于插件**零第三方运行时依赖**且源码可直接被 OpenCode 的 Bun 运行时加载，只需将本仓库 `package.json` 中 `files` 所列内容打进离线交付包，部署时解压到 `/etc/opencode/safety-policy/` 并在 `/etc/opencode/opencode.json` 中按上述本地路径注册即可立即生效。OpenCode 以运行时模块提供 `@opencode/plugin` 和 `effect`，部署目录不需要 `node_modules`。
 
 ---
@@ -665,7 +672,7 @@ opencode-safety-policy/       # 仓库根目录
    - 防绕过 `/safety` 与审批的自保护规则（`service.json`、OpenCode DB、本机 Server `/api/` 端点）、evaluate 中对未匹配 `shell` 请求的 `deny` 级复检、TUI 监听 `permission.asked` 展示规则原因、可选审计日志、可选服务端降级 `/safety` 命令。
    - 验证：实测 `cat ~/.config/opencode/service.json`、`cat ~/.local/state/opencode/service.json`、`cat /proc/<server pid>/environ`、`sqlite3 ~/.local/share/opencode/opencode.db ...`、`curl http://127.0.0.1:<port>/api/rpc/...` 被拦截；TUI 中对插件强制的审批弹出原因 Toast。
 4. **阶段 4：文档与分发脚本**
-   - 补全仓库根目录 `README.md`（含本机安装、私有 npm 发布、`/etc/opencode/safety-policy/` + `/etc/opencode/opencode.json` 托管与 `policies` 防劫持配置、离线安装步骤，以及 [1.2](#12-非目标与安全边界) 中的安全边界说明）。
+   - 补全仓库根目录 `README.md`（含从 GitHub 在线安装、Release 发布、`/etc/opencode/safety-policy/` + `/etc/opencode/opencode.json` 托管与 `policies` 防劫持配置、离线安装步骤，以及 [1.2](#12-非目标与安全边界) 中的安全边界说明）。
 
 ---
 
