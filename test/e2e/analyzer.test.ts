@@ -1,6 +1,6 @@
 /**
  * P1-1 to P1-5 analyzer cases through a real `opencode serve`, with real files for the script inputs and local HTTP
- * servers for Code Mode `fetch`.
+ * servers for Code Mode `fetch`. The plugin runs without `enableServerSlashCommand`, so it also checks that default.
  */
 
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test"
@@ -250,5 +250,14 @@ describe.skipIf(!E2E_ENABLED)("code mode fetch", () => {
     const call = await fetchCall(`http://127.0.0.2:${guarded.port}/redfish/v1/Systems`, "GET")
     expect(call.result).toContain("STATUS 200 GUARDED-OK")
     expect(hits).toEqual(["GET /redfish/v1/Systems"])
+  })
+})
+
+describe.skipIf(!E2E_ENABLED)("server command", () => {
+  test("is not registered unless enabled", async () => {
+    const sessionID = await h.session()
+    const command = h.api("POST", `/api/session/${sessionID}/command`, { name: "safety", text: "status" })
+    await expect(command).rejects.toThrow("Command not found: safety")
+    expect((await h.api("GET", `/api/session/${sessionID}/inbox`)).data).toEqual([])
   })
 })

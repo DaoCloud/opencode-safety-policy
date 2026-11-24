@@ -410,6 +410,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 - [x] TUI 中，插件强制的审批会弹出原因 Toast（`test/e2e/tui.test.ts`）
 - [x] 审计日志字段完整，日志路径不可写时插件仍正常工作（`test/e2e/server.test.ts`）
 - [x] 服务端 `/safety` 在空闲 Session 中写入通知且不触发模型调用，运行中以错误返回结果，模型请求中不出现这些通知（`test/e2e/server.test.ts`）
+- [x] 服务端 `/safety` 默认不注册，锁定时拒绝切换且不写通知；与 TUI 同时使用时补全列出两个条目，执行由 TUI 插件处理（`test/e2e/analyzer.test.ts`、`test/e2e/server.test.ts`、`test/e2e/tui.test.ts`）
 
 ---
 

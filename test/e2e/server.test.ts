@@ -64,6 +64,14 @@ async function eventually(directory: string, expected: Record<string, unknown>) 
   expect(await status(directory)).toMatchObject(expected)
 }
 
+function safety(sessionID: string, text: string) {
+  return h.api("POST", `/api/session/${sessionID}/command`, { name: "safety", text })
+}
+
+async function inbox(sessionID: string) {
+  return (await h.api("GET", `/api/session/${sessionID}/inbox`)).data as any[]
+}
+
 async function setMode(mode: string, ttlMs?: number) {
   const res = await h.rpc("setMode", ttlMs === undefined ? { mode } : { mode, ttlMs })
   expect(res.status).toBe(200)
@@ -323,10 +331,6 @@ describe.skipIf(!E2E_ENABLED)("code mode", () => {
 })
 
 describe.skipIf(!E2E_ENABLED)("server command", () => {
-  const safety = (sessionID: string, text: string) =>
-    h.api("POST", `/api/session/${sessionID}/command`, { name: "safety", text })
-  const inbox = async (sessionID: string) => (await h.api("GET", `/api/session/${sessionID}/inbox`)).data as any[]
-
   test("posts results for the next prompt without a model turn, and the model never sees them", async () => {
     const sessionID = await h.session()
     h.sessions.set(sessionID, h.project)
@@ -461,6 +465,13 @@ describe.skipIf(!E2E_ENABLED)("lock", () => {
     expect(JSON.stringify(res.body)).toContain("锁定为 strict")
     expect(await status()).toMatchObject({ mode: "strict", source: "lock", locked: true })
     expectDenied(await h.shell("kubectl delete ns prod"), "k8s-delete-namespace")
+  })
+
+  test("refuses to switch the mode through the server command and posts nothing", async () => {
+    const sessionID = await h.session()
+    await expect(safety(sessionID, "off")).rejects.toThrow("锁定为 strict")
+    expect(await inbox(sessionID)).toEqual([])
+    expect(await status()).toMatchObject({ mode: "strict", source: "lock", locked: true })
   })
 })
 

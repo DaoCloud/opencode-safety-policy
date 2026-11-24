@@ -19,8 +19,9 @@ class Tui {
   private readonly term = new Terminal({ cols: COLS, rows: ROWS, allowProposedApi: true })
   private readonly proc
 
-  constructor(h: Harness, env: Record<string, string> = {}) {
-    this.proc = Bun.spawn(["opencode", "--standalone", h.project], {
+  /** `server` selects the server: a private one by default. */
+  constructor(h: Harness, env: Record<string, string> = {}, server = ["--standalone"]) {
+    this.proc = Bun.spawn(["opencode", ...server, h.project], {
       cwd: h.project,
       env: h.env({ TERM: "xterm-256color", ...env }),
       terminal: { cols: COLS, rows: ROWS, data: (_terminal, data) => this.term.write(data) },
@@ -191,5 +192,44 @@ describe.skipIf(!E2E_ENABLED)("tui with a locked mode", () => {
     await tui.type("/safety off")
     tui.press(ENTER)
     await tui.waitFor("锁定为 strict")
+  })
+})
+
+describe.skipIf(!E2E_ENABLED)("tui with the server command enabled", () => {
+  const entries = () => tui.screen().match(new RegExp(`/safety +${DESCRIPTION}`, "g"))?.length ?? 0
+  let s: Harness
+  let tui: Tui
+  let sessionID: string
+
+  beforeAll(async () => {
+    s = new Harness({ enableServerSlashCommand: true })
+    await s.start()
+    sessionID = await s.session()
+    tui = new Tui(s, { OPENCODE_PASSWORD: s.password }, ["--server", s.url, "--session", sessionID])
+    await tui.ready()
+  })
+
+  afterAll(async () => {
+    await tui?.close()
+    await s?.dispose()
+  })
+
+  test("lists both entries and runs /safety in the TUI plugin, leaving the server command unused", async () => {
+    await tui.type("/saf")
+    const deadline = Date.now() + 30_000
+    while (entries() < 2 && Date.now() < deadline) await Bun.sleep(100)
+    expect(entries()).toBe(2)
+    tui.press(BACKSPACE.repeat(4))
+    await tui.waitFor(DESCRIPTION, false)
+    const inbox = async () => (await s.api("GET", `/api/session/${sessionID}/inbox`)).data
+    await tui.type("/safety relaxed --ttl 1m")
+    tui.press(ENTER)
+    await tui.waitForToast("当前模式：relaxed（source: runtime，1 分钟后回落）")
+    await tui.type("/safety strict")
+    tui.press(ENTER)
+    await tui.waitForToast("当前模式：strict（source: runtime）")
+    expect(await inbox()).toEqual([])
+    await s.api("POST", `/api/session/${sessionID}/command`, { name: "safety", text: "status" })
+    expect(await inbox()).toHaveLength(1)
   })
 })

@@ -180,7 +180,7 @@ export class Harness {
   /** Sessions used by `prompt` with their directory, and the model turns they should take: one per call plus a reply. */
   readonly sessions = new Map<string, string>()
   expectedTurns = 0
-  private server?: { proc: Subprocess; url: string; auth: string; log: string[] }
+  private server?: { proc: Subprocess; url: string; password: string; auth: string; log: string[] }
   private seq = 0
 
   /** `options` become the plugin's `plugins[].options`. Each of `plugins` is the `index.ts` of one more plugin. */
@@ -279,7 +279,7 @@ export class Harness {
     try {
       const { url, password } = await ready
       const auth = "Basic " + Buffer.from(`opencode:${password}`).toString("base64")
-      this.server = { proc, url, auth, log }
+      this.server = { proc, url, password, auth, log }
     } catch (error) {
       proc.kill("SIGKILL")
       throw error
@@ -290,6 +290,12 @@ export class Harness {
   get url() {
     if (!this.server) throw new Error("opencode serve is not running")
     return this.server.url
+  }
+
+  /** The password of the running `opencode serve`. */
+  get password() {
+    if (!this.server) throw new Error("opencode serve is not running")
+    return this.server.password
   }
 
   async stop() {
