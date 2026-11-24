@@ -10,7 +10,7 @@ function setup(server: { status?: () => Promise<Status>; setMode?: (input: SetMo
   const toasts: Toast[] = []
   const calls: Array<[string, unknown]> = []
   const listeners = new Map<string, (event: unknown) => void>()
-  let layer: (() => { commands?: readonly Command[] }) | undefined
+  let layer: (() => { mode?: string; commands?: readonly Command[] }) | undefined
   const ctx = {
     client: {
       rpc: () => ({
@@ -35,12 +35,14 @@ function setup(server: { status?: () => Promise<Status>; setMode?: (input: SetMo
   } as unknown as Plugin.Context
   const cleanup = plugin.setup(ctx)
   const command = () => layer!().commands![0]!
-  return { toasts, calls, listeners, cleanup, command, run: (input?: string) => command().run(input) }
+  return { toasts, calls, listeners, cleanup, layer: () => layer!(), command, run: (input?: string) => command().run(input) }
 }
 
 describe("/safety", () => {
   test("is a slash command with arguments in the palette", () => {
     const s = setup()
+    // The default base mode is unreachable while the slash autocomplete or the palette is open.
+    expect(s.layer().mode).toBe("global")
     expect(s.command()).toMatchObject({ slash: { name: "safety", arguments: true }, palette: true })
   })
 

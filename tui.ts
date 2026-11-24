@@ -52,6 +52,7 @@ const plugin: Plugin.Definition = {
       ctx.ui.toast.show({ title: TITLE, message, variant, ...(sessionID === undefined ? {} : { sessionID }) })
 
     ctx.keymap.layer(() => ({
+      mode: "global",
       commands: [
         {
           id: "opencode-safety-policy.safety",
