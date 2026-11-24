@@ -55,6 +55,8 @@ opencode
 | 17 | 让模型用 read 工具读取 `~/.local/state/opencode/service-ocsp-not-exist.json` | 拦截，`[safety-policy:self-protect]`（OpenCode 可能先弹 `external_directory` 审批） |
 | 18 | 在 TUI 外用 `ss -ltnp \| grep opencode` 查到 Server 端口 `<port>`，再执行 `curl -s http://127.0.0.1:<port>/api/session` | 拦截，`[safety-policy:self-protect] 禁止调用本机 OpenCode Server API（...）` |
 | 19 | `curl -sS http://127.0.0.1:9/api/v1/query` | Linux 下放行，输出 curl 连接被拒的错误；macOS 探测不到 Server 端口，按任意端口拦截 |
+| 20 | `cat ~/.config/opencode/service-ocsp-not-exist.json` | 拦截，原因同第 15 项 |
+| 21 | `sqlite3 ~/.local/share/opencode/opencode-ocsp-not-exist.db .tables` | 拦截，原因同第 15 项 |
 
 **判定方法**：看工具调用的结果，不看模型的总结。
 
@@ -115,12 +117,51 @@ bun /ai-workspace/weizhoublue/git/opencode-safety-policy/cli.ts test --mode rela
 | 3 | `await fetch("http://127.0.0.2:9/redfish/v1/Systems")` | 不被插件拦截，结果为连接被拒的错误（OpenCode 可能先弹 `webfetch` 审批） |
 | 4 | `await fetch("http://127.0.0.1:<port>/api/session")`，`<port>` 同第 3 节第 18 项 | 结果中出现 `[safety-policy:self-protect]`，GET 也拒绝 |
 
-## 7. 收尾
+## 7. 可选：审计日志
+
+在第 2 节的 `options` 中加入 `"auditLogPath": "/tmp/ocsp-try/audit.jsonl"`，重启 OpenCode，在另一个终端查看这个文件。
+
+| # | 操作 | 预期 |
+|---|---|---|
+| 1 | 重复第 3 节第 2 项 | 新增一行 `"event":"deny"`、`"ruleId":"container-destroy"`，带 `time`、`reason`、`sessionID`、`callID`、`tool`、`input`、`directory` |
+| 2 | 重复第 3 节第 5 项 | 新增一行 `"event":"ask"`、`"ruleId":"rm-local"`；审批中选了什么不记录 |
+| 3 | 重复第 3 节第 4 项中写文件的操作 | 新增一行 `"event":"deny"`、`"ruleId":"self-protect"`、`"permission":"edit"` |
+| 4 | `/safety relaxed --ttl 5m`，再 `/safety strict` | 按顺序新增两行 `"event":"mode"`，第一行带 `"ttlMs":300000` |
+| 5 | `ls -l /tmp/ocsp-try/audit.jsonl` | 权限为 `-rw-------` |
+
+- 默认不记录。日志含命令原文，命令里可能带凭据，所以新建文件的权限为 0600。
+- 放行的调用不记录。写入失败（如路径不可写）时丢弃该条，判定不受影响。
+
+## 8. 可选：服务端 /safety
+
+供 Web UI 等不加载 TUI 插件的客户端使用，默认关闭。TUI 中的 `/safety` 始终由 TUI 插件处理，开启后命令补全会多出一个同名条目，所以只在使用这类客户端时开启。
+
+在第 2 节的 `options` 中加入 `"enableServerSlashCommand": true`，在 `/tmp/ocsp-try` 中执行 `opencode serve --hostname 127.0.0.1`。浏览器打开输出中 `server listening on` 后的地址，用 `server password` 后的密码连接，进入 `/tmp/ocsp-try` 并新建会话。
+
+| # | 操作 | 预期 |
+|---|---|---|
+| 1 | 空闲会话中输入 `/safety status` | 会话中出现一条通知 `当前模式：strict（source: ...）...`，模型不回复 |
+| 2 | `/safety relaxed --ttl 5m` | 通知 `当前模式：relaxed（source: runtime，5 分钟后回落）` |
+| 3 | `/safety test docker stop ocsp-not-exist` | 通知中显示 `结果：ask [container-destroy]` |
+| 4 | `/safety bogus` | 错误提示显示用法，输入框保留原文，会话中不新增通知 |
+| 5 | `/safety strict`，然后让模型执行第 3 节第 5 项，弹出审批时输入 `/safety status` | 结果以错误提示显示，会话中不新增通知；选 `Allow once` 后会话照常结束 |
+| 6 | 问模型“刚才 /safety 的通知里写了什么？” | 模型答不出来，通知不进入模型上下文 |
+
+没有浏览器时可以用 curl 触发，返回 204 即成功，结果在会话通知中：
+
+```bash
+URL=<server listening on 后的地址>; PW=<server password 后的密码>; Q='location%5Bdirectory%5D=/tmp/ocsp-try'
+SID=$(curl -s -u opencode:$PW -H 'content-type: application/json' -d '{}' "$URL/api/session?$Q" | jq -r .data.id)
+curl -s -u opencode:$PW -H 'content-type: application/json' -d '{"name":"safety","text":"status"}' "$URL/api/session/$SID/command?$Q"
+curl -s -u opencode:$PW "$URL/api/session/$SID/inbox?$Q" | jq -r '.data[].payload.description'
+```
+
+## 9. 收尾
 
 - 执行 `/safety strict`。模式状态全局持久化，所有加载了本插件的项目共用。
 - 退出 OpenCode，删除 `/tmp/ocsp-try`。
 
-## 8. 维护约定
+## 10. 维护约定
 
 - 新功能有用户可见的拦截或审批行为时，在第 3 节追加用例。
 - 用例命令必须做到漏拦也无害：用不存在的主机、容器、命名空间、文件、进程，无服务监听的端点，或无害的载荷。不要读真实的 `service.json`、数据库或 `/proc/<pid>/environ`，漏拦会把密码和 API Key 交给模型。不要用 `rm -rf /data` 这类真实破坏命令，本机存在 `/data`。

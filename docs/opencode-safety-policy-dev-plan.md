@@ -405,9 +405,11 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 ### P2-E2E
 
 - [ ] 按[手工试用指南](./opencode-safety-policy-manual-test.md)用真实模型走一遍，本阶段新增的拦截行为已补进用例
-- [ ] `cat <config>/service.json`、`cat <state>/service.json`、`cat /proc/<server pid>/environ`、`sqlite3 <db> ...`、`curl http://127.0.0.1:<port>/api/rpc/...` 被拦截，其他端口的 `/api/` 不受影响
-- [ ] TUI 中，插件强制的审批会弹出原因 Toast
-- [ ] 审计日志字段完整，日志路径不可写时插件仍正常工作
+- [x] `cat <config>/service.json`、`cat <state>/service.json`、`cat /proc/<server pid>/environ`、`sqlite3 <db> ...`、`curl http://127.0.0.1:<port>/api/rpc/...` 被拦截，其他端口的 `/api/` 不受影响（`test/e2e/server.test.ts`）
+- [x] 其他插件改写或追加的危险命令在 evaluate 中被复检拒绝（`test/e2e/server.test.ts`）
+- [x] TUI 中，插件强制的审批会弹出原因 Toast（`test/e2e/tui.test.ts`）
+- [x] 审计日志字段完整，日志路径不可写时插件仍正常工作（`test/e2e/server.test.ts`）
+- [x] 服务端 `/safety` 在空闲 Session 中写入通知且不触发模型调用，运行中以错误返回结果，模型请求中不出现这些通知（`test/e2e/server.test.ts`）
 
 ---
 
