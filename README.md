@@ -23,7 +23,7 @@
 
 ## 安装
 
-要求 OpenCode 2.x 且不低于 2.3.0，CI 使用 2.4.1 测试。下文以 v0.1.0 为例，可用版本见 [Releases](https://github.com/DaoCloud/opencode-safety-policy/releases)。
+要求 OpenCode 2.x 且不低于 2.3.0，CI 使用 2.4.1 测试。下文以 v0.1.1 为例，可用版本见 [Releases](https://github.com/DaoCloud/opencode-safety-policy/releases)。
 
 | 场景 | 方式 |
 |---|---|
@@ -37,7 +37,7 @@
 
 ```json
 {
-  "plugins": [{ "package": "github:DaoCloud/opencode-safety-policy#v0.1.0" }]
+  "plugins": [{ "package": "github:DaoCloud/opencode-safety-policy#v0.1.1" }]
 }
 ```
 
@@ -48,7 +48,7 @@
 在能联网的机器上，从 Release 下载 tarball 和校验文件：
 
 ```bash
-VERSION=0.1.0
+VERSION=0.1.1
 BASE=https://github.com/DaoCloud/opencode-safety-policy/releases/download/v$VERSION
 curl -fL -O "$BASE/daocloud-opencode-safety-policy-$VERSION.tgz" -O "$BASE/SHA256SUMS"
 ```
