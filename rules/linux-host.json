@@ -1,5 +1,5 @@
 {
-  "description": "适用对象：本机与远端的 Linux 主机。覆盖文件删除（含 Kubernetes 与容器运行时状态目录、find 批量删除、git worktree）、磁盘与分区（mkfs、dd、fdisk、parted、wipefs、blkdiscard、nvme、LVM、mdadm、ZFS）、关机重启、systemd 服务（含网络服务）、软件包卸载、内核模块卸载、进程、用户、crontab 与日志清理",
+  "description": "适用对象：本机与远端的 Linux 主机。覆盖文件删除（含 Kubernetes 与容器运行时状态目录、find 批量删除、git worktree）、git 强制推送、磁盘与分区（mkfs、dd、fdisk、parted、wipefs、blkdiscard、nvme、LVM、mdadm、ZFS）、关机重启、systemd 服务（含网络服务）、软件包卸载、内核模块卸载、进程、用户、crontab 与日志清理",
   "rules": [
     {
       "id": "rm-system-path",
@@ -29,15 +29,17 @@
       "severity": "critical",
       "reason": "禁止删除 Kubernetes、etcd 与容器运行时的状态目录",
       "command": "rm",
-      "pattern": "(^| )(/var/lib/(etcd(/member)?|kubelet|containerd|docker|cni|calico|rancher)|/etc/(kubernetes(/pki|/manifests)?|cni|containerd))(/\\*?)?( |$)",
+      "pattern": "(^| )(/var/lib/(etcd(/member)?|kubelet(/pods)?|containerd|docker|cni|calico|rancher(/(k3s|rke2)(/server(/db)?)?)?)|/etc/(kubernetes(/pki|/manifests)?|cni|containerd))(/\\*?)?( |$)",
       "examples": {
         "match": [
           "rm -rf /var/lib/etcd",
           "ssh cp1 'rm -rf /etc/kubernetes'",
           "rm -rf /var/lib/etcd/member/*",
-          "cd /var/lib && rm -rf kubelet"
+          "cd /var/lib && rm -rf kubelet",
+          "rm -rf /var/lib/rancher/k3s",
+          "rm -rf /var/lib/kubelet/pods/*"
         ],
-        "ignore": ["rm -f /var/lib/etcd/member/snap/tmp.log", "rm -rf /var/lib/docker-backup", "echo rm -rf /var/lib/etcd"]
+        "ignore": ["rm -f /var/lib/etcd/member/snap/tmp.log", "rm -rf /var/lib/rancher/k3s/agent/images", "rm -rf /var/lib/docker-backup", "echo rm -rf /var/lib/etcd"]
       }
     },
     {
@@ -89,7 +91,7 @@
       "severity": "high",
       "reason": "禁止通过 find 删除根目录、系统目录、主目录或由变量决定的目录下的文件",
       "command": "find",
-      "pattern": "^find( -[HLP]+| -D \\S+| -O\\d*)*( [^-(!),\\s]\\S*)*? (/(\\*|(etc|var|usr|boot|home|data|root|bin|sbin|lib|lib32|lib64|opt|srv|dev|proc|sys|run|mnt|var/lib|usr/local|var/lib/(etcd(/member)?|kubelet|containerd|docker|cni|calico|rancher)|etc/(kubernetes(/pki|/manifests)?|cni|containerd)|home/[^/\\s]+|Users(/[^/\\s]+)?)(/\\*?)?)?|~[^/\\s]*(/\\*?)?|\\$(\\w+|\\{\\w+\\})(/\\*?)?)(?= |$)(?=.* (-delete|-(exec|execdir|ok|okdir) (\\S*/)?(rm|rmdir|unlink|shred))( |$))",
+      "pattern": "^find( -[HLP]+| -D \\S+| -O\\d*)*( [^-(!),\\s]\\S*)*? (/(\\*|(etc|var|usr|boot|home|data|root|bin|sbin|lib|lib32|lib64|opt|srv|dev|proc|sys|run|mnt|var/lib|usr/local|var/lib/(etcd(/member)?|kubelet(/pods)?|containerd|docker|cni|calico|rancher(/(k3s|rke2)(/server(/db)?)?)?)|etc/(kubernetes(/pki|/manifests)?|cni|containerd)|home/[^/\\s]+|Users(/[^/\\s]+)?)(/\\*?)?)?|~[^/\\s]*(/\\*?)?|\\$(\\w+|\\{\\w+\\})(/\\*?)?)(?= |$)(?=.* (-delete|-(exec|execdir|ok|okdir) (\\S*/)?(rm|rmdir|unlink|shred))( |$))",
       "examples": {
         "match": [
           "find / -name core -delete",
@@ -97,7 +99,9 @@
           "ssh n1 find /var/lib/etcd -type f -delete",
           "cd /usr && find . -delete",
           "ssh n1 'find ~ -name \"*.log\" -delete'",
-          "find ./a $DIR -delete"
+          "find ./a $DIR -delete",
+          "cd / && find -name '*.bak' -delete",
+          "ssh n1 find /var/lib/rancher/rke2/server/db -delete"
         ],
         "ignore": ["find /var/log -name '*.gz' -delete", "find . -name '*.tmp' -delete", "find /etc -name '*.conf'", "echo find / -delete"]
       }
@@ -136,6 +140,18 @@
       "examples": {
         "match": ["git worktree remove --force ../wt", "git -C /repo worktree remove -f -f ../wt"],
         "ignore": ["git worktree remove ../wt", "git worktree add -f ../wt main", "echo git worktree remove -f ../wt"]
+      }
+    },
+    {
+      "id": "git-push-force",
+      "severity": "high",
+      "reason": "禁止强制推送，远端分支上的提交会被覆盖",
+      "command": "git",
+      "subcommands": ["push"],
+      "flags": ["-f", "--force"],
+      "examples": {
+        "match": ["git push --force origin main", "git -C /repo push -uf origin feat"],
+        "ignore": ["git push origin main", "git push --force-with-lease origin feat", "echo git push --force"]
       }
     },
     {

@@ -67,6 +67,9 @@ describe("working directory", () => {
     ["find . -name '*.tmp' -delete", {}, "find-delete-local"],
     ["find ~ -name '*.log' -delete", { home: "/home/alice" }, "find-delete-system-path"],
     ["cd / && find etc -delete", {}, "find-delete-system-path"],
+    ["cd / && find -delete", {}, "find-delete-system-path"],
+    ["cd /var/lib/etcd && find -L -type f -delete", {}, "find-delete-system-path"],
+    ["find -name '*.pyc' -delete", {}, "find-delete-local"],
   ])("%s %o is judged by its canonical start path", (command, options, ruleId) => {
     expect(verdict(command, options)[1]).toBe(ruleId)
   })

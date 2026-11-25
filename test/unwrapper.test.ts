@@ -1063,6 +1063,10 @@ describe("container exec", () => {
     ["kubecolor exec api-0 -- rm -rf /data", "api-0", ["kubecolor exec"]],
     ["k3s kubectl exec api-0 -- rm -rf /data", "api-0", ["k3s", "kubectl exec"]],
     ["microk8s kubectl exec api-0 -- rm -rf /data", "api-0", ["microk8s", "kubectl exec"]],
+    ["oc rsh api-0 rm -rf /data", "api-0", ["oc rsh"]],
+    ["oc -n prod rsh -c app --shell /bin/bash api-0 rm -rf /data", "api-0", ["oc rsh"]],
+    ["oc rsh -f pod.yaml rm -rf /data", "pod.yaml", ["oc rsh"]],
+    ["microk8s.kubectl exec api-0 -- rm -rf /data", "api-0", ["microk8s.kubectl", "kubectl exec"]],
   ])("%s", (input, targetHost, wrapperChain) => {
     expect(only(input)).toEqual({ argv: ["rm", "-rf", "/data"], isRemote: true, targetHost, wrapperChain })
   })
@@ -1084,14 +1088,25 @@ describe("container exec", () => {
     ["microk8s ctr images rm x", ["microk8s"]],
     ["microk8s helm uninstall x", ["microk8s"]],
     ["microk8s helm3 uninstall x", ["microk8s"]],
+    ["k0s kubectl delete ns prod", ["k0s"]],
   ])("%s runs the bundled tool", (input, wrapperChain) => {
     expect(only(input)).toMatchObject({ argv: input.split(" ").slice(1), isRemote: false, wrapperChain })
+  })
+
+  test("microk8s.kubectl runs kubectl", () => {
+    expect(only("microk8s.kubectl delete ns prod")).toMatchObject({
+      argv: ["kubectl", "delete", "ns", "prod"],
+      wrapperChain: ["microk8s.kubectl"],
+    })
   })
 
   test.each([
     "kubectl debug node/n1 -it --image=busybox",
     "kubectl debug api-0 --copy-to=dbg",
+    "oc rsh api-0",
+    "oc rsh -c app api-0",
     "k3s server",
+    "k0s status",
     "microk8s status",
   ])("%s is not unwrapped", (input) => {
     expect(only(input).wrapperChain).toEqual([])

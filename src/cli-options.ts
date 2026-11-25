@@ -310,7 +310,7 @@ export const OPTION_SPECS = {
     },
   ),
   shell: spec("", ["rcfile", "init-file"]),
-  // Global options plus the value-taking options of `kubectl exec`.
+  // Global options plus the value-taking options of `kubectl exec` and `oc rsh`.
   kubectl: spec("nsvcf", [
     "as",
     "as-group",
@@ -344,6 +344,7 @@ export const OPTION_SPECS = {
     "container",
     "filename",
     "pod-running-timeout",
+    "shell",
   ]),
   docker: spec("Hcl", ["config", "context", "host", "log-level", "tlscacert", "tlscert", "tlskey"]),
   dockerExec: spec("euw", ["env", "env-file", "user", "workdir", "detach-keys"]),

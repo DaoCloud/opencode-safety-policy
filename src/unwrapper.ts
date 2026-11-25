@@ -808,7 +808,7 @@ function ssh(args: string[], _: boolean[], stdin?: string, piped?: Piped): Layer
   return layers
 }
 
-/** `kubectl exec` and `kubectl debug`; `oc` and `kubecolor` take the same arguments. */
+/** `kubectl exec`, `kubectl debug` and `oc rsh`; `oc` and `kubecolor` take the same arguments. */
 function kubectl(name: string): Unwrapper {
   return (args, expanded) => {
     const positionals: number[] = []
@@ -819,6 +819,7 @@ function kubectl(name: string): Unwrapper {
       else positionals.push(i++)
     }
     const [sub, target, command] = positionals
+    if (sub !== undefined && args[sub] === "rsh") return rsh(name, args, expanded, sub + 1)
     // `kubectl debug target... -- command` runs in a debug container of a pod, or on a node (`node/x`), where the
     // root filesystem of the node is mounted at `/host`.
     if (sub !== undefined && args[sub] === "debug" && target !== undefined && i + 1 < args.length) {
@@ -833,6 +834,21 @@ function kubectl(name: string): Unwrapper {
     if (start === undefined || start >= args.length) return []
     return [{ label: `${name} exec`, host: args[target], inner: { argv: args.slice(start), expanded: expanded.slice(start) } }]
   }
+}
+
+/**
+ * `oc rsh [options] pod command...`: options end at the pod, and the rest is the command. With `-f file` there is
+ * no pod argument. Without a command it opens an interactive shell.
+ */
+function rsh(name: string, args: string[], expanded: boolean[], i: number): Layer[] {
+  let file: string | undefined
+  for (let option; (option = readOption(args, i, OPTION_SPECS.kubectl)); i = option.next) {
+    if (option.name === "-f" || option.name === "--filename") file = option.value
+  }
+  const start = file === undefined ? i + 1 : i
+  if (start >= args.length) return []
+  const host = file ?? args[i]!
+  return [{ label: `${name} rsh`, host, inner: { argv: args.slice(start), expanded: expanded.slice(start) } }]
 }
 
 /**
@@ -1257,9 +1273,16 @@ function systemdRun(args: string[], expanded: boolean[], stdin?: string, piped?:
   return inDir(layers, wd !== undefined ? wd : same ? undefined : user ? null : "/")
 }
 
-/** `k3s` / `microk8s` run their bundled `kubectl` and other CLIs: `k3s kubectl delete ns x`. */
+/** `k3s` / `k0s` / `microk8s` run their bundled `kubectl` and other CLIs: `k3s kubectl delete ns x`. */
 function bundled(label: string, names: readonly string[]): Unwrapper {
   return (args, expanded) => (names.includes(args[0] ?? "") ? [{ label, inner: { argv: args, expanded } }] : [])
+}
+
+const MICROK8S_TOOLS = ["kubectl", "ctr", "helm", "helm3"]
+
+/** A command that runs `tool` with its own arguments. */
+function alias(label: string, tool: string): Unwrapper {
+  return (args, expanded) => [{ label, inner: { argv: [tool, ...args], expanded: [false, ...expanded] } }]
 }
 
 /** `flock [options] file command...` or `flock [options] file -c command`; `flock fd` runs nothing. */
@@ -1718,7 +1741,10 @@ const WRAPPERS: Record<string, Unwrapper> = {
   ssh,
   ...Object.fromEntries(["kubectl", "oc", "kubecolor"].map((name) => [name, kubectl(name)])),
   k3s: bundled("k3s", ["kubectl", "crictl", "ctr"]),
-  microk8s: bundled("microk8s", ["kubectl", "ctr", "helm", "helm3"]),
+  k0s: bundled("k0s", ["kubectl", "ctr"]),
+  microk8s: bundled("microk8s", MICROK8S_TOOLS),
+  // Snap aliases: `microk8s.kubectl delete ns x`.
+  ...Object.fromEntries(MICROK8S_TOOLS.map((tool) => [`microk8s.${tool}`, alias(`microk8s.${tool}`, tool)])),
   docker: containerExec("docker", OPTION_SPECS.docker, OPTION_SPECS.dockerExec),
   nerdctl: containerExec("nerdctl", OPTION_SPECS.nerdctl, OPTION_SPECS.nerdctlExec),
   podman: containerExec("podman", OPTION_SPECS.podman, OPTION_SPECS.podmanExec, new Set(["-l", "--latest", "--cidfile"])),
