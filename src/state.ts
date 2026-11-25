@@ -2,7 +2,7 @@
  * Global mode state (design 5.2).
  *
  * Priority, highest first: `OPENCODE_SAFETY_LOCK_MODE`, the runtime state in storage (with TTL),
- * `OPENCODE_SAFETY_MODE`, `options.mode`, then `strict`.
+ * `OPENCODE_SAFETY_MODE`, `options.mode`, then `relaxed`.
  *
  * Plugin instances are per location and do not share memory, so every decision reads the shared storage, cached for
  * `cacheMs`. TTL is checked on read: an expired state falls back to its `previousMode`, or to the lower layers when it
