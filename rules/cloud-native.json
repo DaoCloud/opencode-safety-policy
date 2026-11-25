@@ -1,33 +1,75 @@
 {
-  "description": "适用对象：Kubernetes 集群及容器运行时。覆盖 kubectl、helm、etcdctl、velero，以及 docker、nerdctl、podman、crictl、ctr",
+  "description": "适用对象：Kubernetes 集群及容器运行时。覆盖 kubectl（及 oc、kubecolor）、kubeadm、k3s 与 rke2 卸载脚本、helm、etcdctl、velero，以及 docker、docker-compose、nerdctl、podman、crictl、ctr",
   "rules": [
     {
       "id": "k8s-delete-namespace",
       "severity": "critical",
       "reason": "禁止删除 Kubernetes 命名空间",
-      "command": "kubectl",
+      "command": ["kubectl", "oc", "kubecolor"],
       "subcommands": ["delete", "del"],
-      "pattern": "(?<!-n|--namespace) (\\S+,)?(ns|namespaces?)([/,]\\S*)?( |$)",
+      "pattern": "(^| )(delete|del)( -\\S+( [^-\\s]\\S*)?| [^-\\s]\\S*/\\S*)*(?<! -n| --namespace) (\\S+,)?(?i:ns|namespaces?|projects?)([/,]\\S*)?( |$)",
       "examples": {
         "match": [
           "kubectl delete ns prod",
           "kubectl --context prod delete namespace payments",
           "kubectl delete namespaces/payments",
-          "ssh master kubectl delete ns,deploy x"
+          "ssh master kubectl delete ns,deploy x",
+          "kubectl delete Namespace prod",
+          "kubectl delete --wait=false -l team=x ns",
+          "oc delete project payments"
         ],
         "ignore": [
           "kubectl get ns",
           "kubectl delete pod x -n ns",
           "kubectl delete pod x --namespace prod",
+          "kubectl delete pod ns",
+          "kubectl delete -n ns pod x",
           "echo kubectl delete ns prod"
         ]
+      }
+    },
+    {
+      "id": "k8s-delete-crd",
+      "severity": "critical",
+      "reason": "禁止删除 CRD（会级联删除该类型的全部自定义资源）",
+      "command": ["kubectl", "oc", "kubecolor"],
+      "subcommands": ["delete", "del"],
+      "pattern": "(^| )(delete|del)( -\\S+( [^-\\s]\\S*)?| [^-\\s]\\S*/\\S*)*(?<! -n| --namespace) (\\S+,)?(?i:crds?|customresourcedefinitions?(\\.apiextensions\\.k8s\\.io)?)([/,]\\S*)?( |$)",
+      "examples": {
+        "match": [
+          "kubectl delete crd certificates.cert-manager.io",
+          "kubectl delete customresourcedefinition/foos.example.com",
+          "oc delete crds -l app.kubernetes.io/part-of=x"
+        ],
+        "ignore": ["kubectl get crd", "kubectl delete pod crd", "kubectl delete pod api-crd-0", "echo kubectl delete crd x"]
+      }
+    },
+    {
+      "id": "k8s-node-reset",
+      "severity": "critical",
+      "reason": "禁止用 kubeadm reset 清除节点上的 Kubernetes 组件与证书",
+      "command": "kubeadm",
+      "subcommands": ["reset"],
+      "examples": {
+        "match": ["kubeadm reset -f", "ssh cp1 sudo kubeadm reset --force"],
+        "ignore": ["kubeadm token list", "kubeadm certs check-expiration", "echo kubeadm reset -f"]
+      }
+    },
+    {
+      "id": "k8s-uninstall-script",
+      "severity": "critical",
+      "reason": "禁止运行 k3s 或 rke2 卸载脚本",
+      "pattern": "^(k3s|k3s-agent|rke2)-uninstall\\.sh( |$)",
+      "examples": {
+        "match": ["k3s-uninstall.sh", "ssh n1 sudo /usr/local/bin/rke2-uninstall.sh"],
+        "ignore": ["cat /usr/local/bin/k3s-uninstall.sh", "echo k3s-uninstall.sh"]
       }
     },
     {
       "id": "k8s-delete-all-namespaces",
       "severity": "critical",
       "reason": "禁止跨所有命名空间批量删除 Kubernetes 资源",
-      "command": "kubectl",
+      "command": ["kubectl", "oc", "kubecolor"],
       "subcommands": ["delete", "del"],
       "flags": ["-A", "--all-namespaces"],
       "examples": {
@@ -39,7 +81,7 @@
       "id": "k8s-delete",
       "severity": "high",
       "reason": "禁止删除 Kubernetes 资源",
-      "command": "kubectl",
+      "command": ["kubectl", "oc", "kubecolor"],
       "subcommands": ["delete", "del"],
       "examples": {
         "match": [
@@ -56,22 +98,23 @@
       "id": "k8s-node-disrupt",
       "severity": "high",
       "reason": "禁止驱逐或隔离 Kubernetes 节点",
-      "command": "kubectl",
-      "subcommands": ["drain", "cordon", "taint"],
+      "command": ["kubectl", "oc", "kubecolor"],
+      "subcommands": ["drain", "cordon", "taint", "adm drain", "adm cordon", "adm taint"],
       "examples": {
         "match": [
           "kubectl drain node1 --ignore-daemonsets",
           "kubectl cordon node1",
-          "kubectl taint nodes node1 key=value:NoSchedule"
+          "kubectl taint nodes node1 key=value:NoSchedule",
+          "oc adm drain node1 --ignore-daemonsets"
         ],
-        "ignore": ["kubectl uncordon node1", "kubectl describe node drain", "echo kubectl drain node1"]
+        "ignore": ["kubectl uncordon node1", "kubectl describe node drain", "oc adm top nodes", "echo kubectl drain node1"]
       }
     },
     {
       "id": "k8s-replace-force",
       "severity": "high",
       "reason": "禁止强制替换 Kubernetes 资源（会先删除再重建）",
-      "command": "kubectl",
+      "command": ["kubectl", "oc", "kubecolor"],
       "subcommands": ["replace"],
       "flags": ["--force"],
       "examples": {
@@ -83,7 +126,7 @@
       "id": "k8s-rollout-undo",
       "severity": "high",
       "reason": "禁止回滚 Kubernetes 工作负载",
-      "command": "kubectl",
+      "command": ["kubectl", "oc", "kubecolor"],
       "subcommands": ["rollout undo"],
       "examples": {
         "match": ["kubectl rollout undo deploy/api", "kubectl -n prod rollout undo deployment api --to-revision 2"],
@@ -94,19 +137,30 @@
       "id": "k8s-scale-zero",
       "severity": "high",
       "reason": "禁止把 Kubernetes 工作负载缩容到 0",
-      "command": "kubectl",
-      "subcommands": ["scale"],
-      "flags": ["--replicas=0"],
+      "command": ["kubectl", "oc", "kubecolor"],
+      "subcommands": ["scale", "patch"],
+      "pattern": "(^| )--replicas[= ]0( |$)|\\breplicas\"?\\s*:\\s*0(?![\\w.])|\"/spec/replicas\"[^}]*\"value\"\\s*:\\s*0(?![\\w.])|\"value\"\\s*:\\s*0(?![\\w.])[^}]*\"/spec/replicas\"",
       "examples": {
-        "match": ["kubectl scale --replicas=0 deploy/api", "kubectl -n prod scale deploy api --replicas 0"],
-        "ignore": ["kubectl scale --replicas=3 deploy/api", "kubectl get deploy api", "echo kubectl scale --replicas=0 deploy/api"]
+        "match": [
+          "kubectl scale --replicas=0 deploy/api",
+          "kubectl -n prod scale deploy api --replicas 0",
+          "kubectl patch deploy api -p '{\"spec\":{\"replicas\":0}}'",
+          "oc patch sts db --type json -p '[{\"op\":\"replace\",\"path\":\"/spec/replicas\",\"value\":0}]'"
+        ],
+        "ignore": [
+          "kubectl scale --replicas=3 deploy/api",
+          "kubectl get deploy api",
+          "kubectl patch deploy api -p '{\"spec\":{\"replicas\":10}}'",
+          "kubectl patch hpa api -p '{\"spec\":{\"minReplicas\":0}}'",
+          "echo kubectl scale --replicas=0 deploy/api"
+        ]
       }
     },
     {
       "id": "k8s-patch-remove",
       "severity": "high",
       "reason": "禁止通过 kubectl patch 删除或清空字段",
-      "command": "kubectl",
+      "command": ["kubectl", "oc", "kubecolor"],
       "subcommands": ["patch"],
       "pattern": "\"op\" *: *\"remove\"|\"\\$patch\" *: *\"delete\"|: *null *[,}\\]]",
       "examples": {
@@ -125,11 +179,23 @@
       "id": "k8s-patch",
       "severity": "medium",
       "reason": "kubectl patch 会直接修改线上资源",
-      "command": "kubectl",
+      "command": ["kubectl", "oc", "kubecolor"],
       "subcommands": ["patch"],
       "examples": {
         "match": ["kubectl patch deploy api -p '{\"spec\":{\"replicas\":2}}'", "kubectl -n prod patch svc api --type merge -p '{}'"],
         "ignore": ["kubectl get deploy api -o yaml", "echo kubectl patch deploy api"]
+      }
+    },
+    {
+      "id": "k8s-apply-prune",
+      "severity": "high",
+      "reason": "禁止使用 kubectl apply --prune（会删除清单之外的资源）",
+      "command": ["kubectl", "oc", "kubecolor"],
+      "subcommands": ["apply"],
+      "flags": ["--prune"],
+      "examples": {
+        "match": ["kubectl apply -f manifests/ --prune -l app=api", "kubectl apply --prune --all -f ."],
+        "ignore": ["kubectl apply -f app.yaml", "kubectl get pods --prune", "echo kubectl apply --prune -f ."]
       }
     },
     {
@@ -152,6 +218,20 @@
       "examples": {
         "match": ["etcdctl del /registry/pods/default/x", "ETCDCTL_API=3 etcdctl --endpoints https://127.0.0.1:2379 del /registry --prefix"],
         "ignore": ["etcdctl get /registry --prefix --keys-only", "etcdctl endpoint health", "echo etcdctl del /registry"]
+      }
+    },
+    {
+      "id": "etcd-member-remove",
+      "severity": "high",
+      "reason": "禁止移除 etcd 集群成员（可能导致集群失去 quorum）",
+      "command": "etcdctl",
+      "subcommands": ["member remove"],
+      "examples": {
+        "match": [
+          "etcdctl member remove 8e9e05c52164694d",
+          "ETCDCTL_API=3 etcdctl --endpoints=https://10.0.0.1:2379 member remove abc"
+        ],
+        "ignore": ["etcdctl member list", "echo etcdctl member remove abc"]
       }
     },
     {
@@ -186,6 +266,7 @@
         "network rm",
         "network prune",
         "system prune",
+        "system reset",
         "builder prune",
         "compose down",
         "compose rm",
@@ -205,6 +286,7 @@
           "docker container prune -f",
           "docker compose -f prod.yml down -v",
           "podman pod rm -f web",
+          "podman system reset -f",
           "nerdctl -n k8s.io rmi nginx"
         ],
         "ignore": [
@@ -214,6 +296,17 @@
           "docker logs app",
           "echo docker rm -f app"
         ]
+      }
+    },
+    {
+      "id": "compose-down",
+      "severity": "high",
+      "reason": "禁止停止或删除 Compose 项目的容器、卷与网络",
+      "command": ["docker-compose", "podman-compose"],
+      "subcommands": ["down", "rm", "stop", "kill"],
+      "examples": {
+        "match": ["docker-compose down -v", "docker-compose -f prod.yml stop", "podman-compose rm -f"],
+        "ignore": ["docker-compose ps", "docker-compose up -d", "echo docker-compose down -v"]
       }
     },
     {

@@ -87,6 +87,10 @@ describe("wrappers and stdin", () => {
     "sudo {rm,-rf,/}",
     "find /tmp -exec sh -c 'rm -rf /etc' \\;",
     "chroot /mnt rm -rf etc",
+    "nsenter -t 1 -m rm -rf etc",
+    "unshare -R /mnt rm -rf etc",
+    "systemd-run rm -rf etc",
+    "kubectl debug node/n1 -it --image=busybox -- chroot /host rm -rf /etc",
     "flock /tmp/l -c 'rm -rf /'",
     "watch -n1 rm -rf /etc",
     "parallel rm -rf ::: /tmp/x /etc",
@@ -137,15 +141,20 @@ describe("wrappers and stdin", () => {
     "parallel -m chown -R nobody ::: /etc /usr",
     "parallel -N2 'chmod -R 777 {2}' ::: a /etc",
     "parallel 'chmod -R 777 {2}' ::: a ::: /etc",
-    "parallel 'chown -R nobody {//}' ::: /x/",
     "parallel -N2 'chmod -R 777 {1}{2}' ::: a b /etc",
     "parallel -N2 -n1 'chmod -R 777 {2}' ::: a /etc",
     "parallel -n ' ' 'chmod -R 777' ::: /etc",
     "parallel -N '' 'chmod -R 777 {}' ::: /etc",
-    "parallel -L 0 'chmod -R 777 /{}' ::: a",
   ])("grouped values in %s are each checked", (command) => {
     expect(verdict(command)).toEqual(["deny", "chmod-chown-recursive-system"])
   })
+
+  test.each(["parallel 'chown -R nobody {//}' ::: /x/", "parallel -L 0 'chmod -R 777 /{}' ::: a"])(
+    "grouped values in %s resolve to the root",
+    (command) => {
+      expect(verdict(command)).toEqual(["deny", "chmod-chown-recursive-root"])
+    },
+  )
 
   test.each([
     "ansible all -m shell -a 'kubectl delete ns prod'",

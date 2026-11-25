@@ -1,12 +1,12 @@
 {
-  "description": "适用对象：本机与远端的 Linux 主机。覆盖文件删除、磁盘与分区（mkfs、dd、fdisk、parted、wipefs、LVM、mdadm、ZFS）、关机重启、systemd 服务、进程、用户、crontab 与日志清理",
+  "description": "适用对象：本机与远端的 Linux 主机。覆盖文件删除（含 Kubernetes 与容器运行时状态目录）、磁盘与分区（mkfs、dd、fdisk、parted、wipefs、blkdiscard、nvme、LVM、mdadm、ZFS）、关机重启、systemd 服务（含网络服务）、软件包卸载、内核模块卸载、进程、用户、crontab 与日志清理",
   "rules": [
     {
       "id": "rm-system-path",
       "severity": "critical",
       "reason": "禁止删除根目录或系统关键目录",
       "command": "rm",
-      "pattern": "(^| )/(\\*|(etc|var|usr|boot|home|data|root|bin|sbin|lib|lib32|lib64|opt|srv|dev|proc|sys|run|mnt)(/\\*?)?)?( |$)",
+      "pattern": "(^| )/(\\*|(etc|var|usr|boot|home|data|root|bin|sbin|lib|lib32|lib64|opt|srv|dev|proc|sys|run|mnt|var/lib|usr/local)(/\\*?)?)?( |$)",
       "examples": {
         "match": [
           "rm -rf /",
@@ -17,9 +17,27 @@
           "ssh node1 'rm -rf /var'",
           "cd /tmp && sudo rm -Rf /usr",
           "rm -rf /bin",
-          "cd /sbin && rm -rf *"
+          "cd /sbin && rm -rf *",
+          "rm -rf /var/lib/",
+          "rm -rf /usr/local/*"
         ],
-        "ignore": ["rm -rf ./build", "rm /etc/hosts", "rm -rf /etc/app/cache", "echo rm -rf /"]
+        "ignore": ["rm -rf ./build", "rm /etc/hosts", "rm -rf /etc/app/cache", "rm -rf /usr/local/app", "echo rm -rf /"]
+      }
+    },
+    {
+      "id": "rm-k8s-state",
+      "severity": "critical",
+      "reason": "禁止删除 Kubernetes、etcd 与容器运行时的状态目录",
+      "command": "rm",
+      "pattern": "(^| )(/var/lib/(etcd(/member)?|kubelet|containerd|docker|cni|calico|rancher)|/etc/(kubernetes(/pki|/manifests)?|cni|containerd))(/\\*?)?( |$)",
+      "examples": {
+        "match": [
+          "rm -rf /var/lib/etcd",
+          "ssh cp1 'rm -rf /etc/kubernetes'",
+          "rm -rf /var/lib/etcd/member/*",
+          "cd /var/lib && rm -rf kubelet"
+        ],
+        "ignore": ["rm -f /var/lib/etcd/member/snap/tmp.log", "rm -rf /var/lib/docker-backup", "echo rm -rf /var/lib/etcd"]
       }
     },
     {
@@ -92,16 +110,28 @@
       "severity": "critical",
       "reason": "禁止修改磁盘分区表",
       "command": ["fdisk", "sfdisk", "gdisk", "cfdisk", "sgdisk", "parted"],
-      "pattern": "^\\S+(?!\\S)(?!(?=.* (-l|--list|-d|--dump|-p|--print|print|-V|--version|-h|--help)( |$))( (-l|--list|-d|--dump|-p|--print|print|-V|--version|-h|--help|-s|--script|-m|--machine|/dev/\\S+)(?= |$))*$)",
+      "pattern": "^\\S+(?!\\S)(?!(?=.* (-l|--list|-x|--list-details|-d|--dump|-J|--json|-p|--print|print|-i ?\\d+|--info[= ]\\d+|-v|-V|--verify|--version|-h|--help)( |$))( (-l|--list|-x|--list-details|-d|--dump|-J|--json|-p|--print|print|-i ?\\d+|--info[= ]\\d+|-v|-V|--verify|--version|-h|--help|-s|--script|-m|--machine|unit \\S+|free|/dev/\\S+)(?= |$))*$)",
       "examples": {
         "match": [
           "fdisk /dev/sdb",
           "parted -s /dev/sdb mklabel gpt",
           "sgdisk --zap-all /dev/nvme0n1",
           "printf 'o\\nw\\n' | fdisk /dev/sdb",
-          "sfdisk /dev/sdb"
+          "sfdisk /dev/sdb",
+          "sgdisk -i 1 -d 1 /dev/sdb",
+          "parted -s /dev/sdb unit s rm 1"
         ],
-        "ignore": ["fdisk -l", "fdisk -l /dev/sda", "parted -s /dev/sda print", "sfdisk -d /dev/sda", "echo fdisk /dev/sdb"]
+        "ignore": [
+          "fdisk -l",
+          "fdisk -l /dev/sda",
+          "fdisk -x /dev/sda",
+          "parted -s /dev/sda print",
+          "parted /dev/sda unit s print free",
+          "sfdisk -d /dev/sda",
+          "sfdisk -J /dev/sda",
+          "sgdisk -i 1 /dev/sda",
+          "echo fdisk /dev/sdb"
+        ]
       }
     },
     {
@@ -113,6 +143,22 @@
       "examples": {
         "match": ["wipefs -a /dev/sdb", "wipefs --all --force /dev/nvme0n1"],
         "ignore": ["wipefs /dev/sdb", "echo wipefs -a /dev/sdb"]
+      }
+    },
+    {
+      "id": "disk-secure-erase",
+      "severity": "critical",
+      "reason": "禁止对磁盘执行丢弃、格式化或安全擦除",
+      "command": ["blkdiscard", "nvme", "hdparm"],
+      "pattern": "^blkdiscard( |$)|^nvme (format|sanitize|delete-ns)( |$)|^hdparm (.* )?--security-erase(-enhanced)?( |$)",
+      "examples": {
+        "match": [
+          "blkdiscard /dev/nvme0n1",
+          "nvme format /dev/nvme0n1 --ses=1",
+          "ssh n1 nvme sanitize -a 2 /dev/nvme0",
+          "hdparm --user-master u --security-erase p /dev/sdb"
+        ],
+        "ignore": ["nvme list", "nvme smart-log /dev/nvme0", "hdparm -I /dev/sda", "echo nvme format /dev/nvme0n1"]
       }
     },
     {
@@ -183,10 +229,16 @@
       "severity": "high",
       "reason": "禁止通过 systemctl 关机、重启或切换到救援模式",
       "command": "systemctl",
-      "subcommands": ["reboot", "poweroff", "halt", "kexec", "soft-reboot", "rescue", "emergency", "isolate"],
+      "pattern": "(^| )(reboot|poweroff|halt|kexec|soft-reboot|rescue|emergency|isolate)( |$)|(^| )(start|restart|try-restart|reload-or-restart)( \\S+)* (reboot|poweroff|halt|kexec|soft-reboot|rescue|emergency)\\.target( |$)",
       "examples": {
-        "match": ["systemctl reboot", "sudo systemctl poweroff -i", "systemctl isolate rescue.target"],
-        "ignore": ["systemctl status", "systemctl status reboot.target", "echo systemctl reboot"]
+        "match": [
+          "systemctl reboot",
+          "sudo systemctl poweroff -i",
+          "systemctl isolate rescue.target",
+          "systemctl start reboot.target",
+          "ssh node1 systemctl --no-block start poweroff.target"
+        ],
+        "ignore": ["systemctl status", "systemctl status reboot.target", "systemctl start nginx", "echo systemctl reboot"]
       }
     },
     {
@@ -201,12 +253,57 @@
       }
     },
     {
+      "id": "net-service-restart",
+      "severity": "high",
+      "reason": "禁止重启或停止网络服务（会中断连接与路由）",
+      "command": ["systemctl", "service"],
+      "pattern": "(^| )(restart|stop|reload-or-restart|try-restart)( \\S+)* (networking|network|frr|NetworkManager|systemd-networkd)(\\.service)?( |$)|^service (networking|network|frr|NetworkManager) (restart|stop)( |$)",
+      "examples": {
+        "match": ["ssh leaf1 sudo systemctl restart networking", "systemctl restart frr.service", "service network restart"],
+        "ignore": ["systemctl status frr", "systemctl restart nginx", "echo systemctl restart frr"]
+      }
+    },
+    {
+      "id": "pkg-remove",
+      "severity": "high",
+      "reason": "禁止卸载系统软件包",
+      "command": ["apt", "apt-get", "yum", "dnf", "zypper"],
+      "subcommands": ["remove", "purge", "autoremove", "erase", "rm"],
+      "examples": {
+        "match": ["apt-get purge -y openssh-server", "yum remove -y kernel", "zypper rm vim"],
+        "ignore": ["apt-get install -y curl", "dnf list installed", "echo apt-get remove -y vim"]
+      }
+    },
+    {
+      "id": "kmod-unload",
+      "severity": "high",
+      "reason": "禁止卸载内核模块（卸载网卡驱动会断网）",
+      "command": ["rmmod", "modprobe"],
+      "pattern": "^rmmod( |$)|^modprobe (.* )?(-\\w*r\\w*|--remove)( |$)",
+      "examples": {
+        "match": ["rmmod nvidia", "modprobe -r mlx5_core", "ssh n1 modprobe -rv ib_core"],
+        "ignore": ["modprobe mlx5_core", "modprobe --force-vermagic x", "echo rmmod nvidia"]
+      }
+    },
+    {
+      "id": "chmod-chown-recursive-root",
+      "severity": "critical",
+      "reason": "禁止递归修改根目录的权限与属主",
+      "command": ["chmod", "chown", "chgrp"],
+      "flags": ["-R", "--recursive"],
+      "pattern": "(^| )/\\*?( |$)",
+      "examples": {
+        "match": ["chmod -R 777 /", "sudo chown -R nobody /*", "cd / && chmod -R 755 ."],
+        "ignore": ["chmod -R 777 /etc", "chmod 755 /", "echo chmod -R 777 /"]
+      }
+    },
+    {
       "id": "chmod-chown-recursive-system",
       "severity": "high",
       "reason": "禁止递归修改根目录或系统关键目录的权限与属主",
       "command": ["chmod", "chown", "chgrp"],
       "flags": ["-R", "--recursive"],
-      "pattern": "(^| )/(\\*|(etc|var|usr|boot|home|data|root|bin|sbin|lib|lib32|lib64|opt|srv|dev|proc|sys|run|mnt)(/\\*?)?)?( |$)",
+      "pattern": "(^| )/(\\*|(etc|var|usr|boot|home|data|root|bin|sbin|lib|lib32|lib64|opt|srv|dev|proc|sys|run|mnt|var/lib|usr/local)(/\\*?)?)?( |$)",
       "examples": {
         "match": ["chmod -R 777 /", "chown -R nobody /etc", "chgrp --recursive users /home", "chmod -R 777 /lib"],
         "ignore": ["chmod -R 755 ./dist", "chmod 644 /etc/hosts", "echo chmod -R 777 /"]
@@ -231,6 +328,17 @@
       "examples": {
         "match": ["crontab -r", "crontab -u root -r"],
         "ignore": ["crontab -l", "echo crontab -r"]
+      }
+    },
+    {
+      "id": "kill-all-processes",
+      "severity": "critical",
+      "reason": "禁止向所有进程发送信号",
+      "command": ["kill", "killall5"],
+      "pattern": "^kill( \\S+)+ -1( |$)|^killall5( |$)",
+      "examples": {
+        "match": ["kill -9 -1", "sudo kill -s KILL -1", "kill -- -1", "killall5 -9"],
+        "ignore": ["kill -1 1234", "kill -HUP 1234", "echo kill -9 -1"]
       }
     },
     {

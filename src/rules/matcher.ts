@@ -57,7 +57,7 @@ export interface CompiledRule {
 }
 
 const COMMAND_SPECS = new Map<string, OptionSpec>([
-  ["kubectl", OPTION_SPECS.kubectl],
+  ...["kubectl", "oc", "kubecolor"].map((name): [string, OptionSpec] => [name, OPTION_SPECS.kubectl]),
   ["docker", OPTION_SPECS.docker],
   ...["iptables", "ip6tables", "iptables-legacy", "ip6tables-legacy", "iptables-nft", "ip6tables-nft", "ebtables", "arptables"]
     .map((name): [string, OptionSpec] => [name, OPTION_SPECS.iptables]),

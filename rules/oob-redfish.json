@@ -34,6 +34,7 @@
       "command": "ipmitool",
       "subcommands": [
         "mc reset",
+        "bmc reset",
         "raw",
         "lan set",
         "user set",
@@ -53,6 +54,7 @@
       "examples": {
         "match": [
           "ipmitool mc reset cold",
+          "ipmitool -I lanplus -H bmc1 bmc reset warm",
           "ipmitool -H bmc1 raw 0x30 0x01",
           "ipmitool lan set 1 ipaddr 10.0.0.9",
           "ipmitool -H bmc1 sensor thresh CPU0_Temp upper 80 90 95",

@@ -1,5 +1,5 @@
 {
-  "description": "适用对象：主机网络配置与数据库。覆盖 ip、ifdown、nmcli、iptables、nft、rsync 的删除选项，以及数据库客户端（mysql、psql、mongosh、redis-cli 等）的删库、删表与清空操作",
+  "description": "适用对象：主机网络配置与数据库。覆盖 ip、ifdown、nmcli、iptables、nft、rsync 的删除选项，以及数据库客户端（mysql、psql、mongosh、redis-cli 等）与 dropdb、mysqladmin 的删库、删表与清空操作",
   "rules": [
     {
       "id": "ip-link-down",
@@ -10,6 +10,17 @@
       "examples": {
         "match": ["ip link set eth0 down", "ip -n ns1 l s dev eth1 down", "ssh leaf1 ip link set swp1 down"],
         "ignore": ["ip link set eth0 up", "ip link show", "echo ip link set eth0 down"]
+      }
+    },
+    {
+      "id": "ip-link-delete",
+      "severity": "high",
+      "reason": "禁止删除网络接口",
+      "command": "ip",
+      "pattern": "(^| )(l|li|lin|link) (d|de|del|dele|delet|delete)( |$)",
+      "examples": {
+        "match": ["ip link del bond0", "ip link delete vxlan.calico", "ssh n1 ip -n ns1 l d veth0"],
+        "ignore": ["ip link show bond0", "ip link add br0 type bridge", "echo ip link del bond0"]
       }
     },
     {
@@ -71,6 +82,27 @@
       }
     },
     {
+      "id": "iptables-policy-drop",
+      "severity": "high",
+      "reason": "禁止把防火墙链的默认策略改为丢弃（可能切断当前连接）",
+      "command": [
+        "iptables",
+        "ip6tables",
+        "iptables-legacy",
+        "ip6tables-legacy",
+        "iptables-nft",
+        "ip6tables-nft",
+        "ebtables",
+        "arptables"
+      ],
+      "flags": ["-P", "--policy"],
+      "pattern": " (DROP|REJECT)( |$)",
+      "examples": {
+        "match": ["iptables -P INPUT DROP", "ip6tables --policy FORWARD DROP", "ssh n1 iptables -t filter -P OUTPUT DROP"],
+        "ignore": ["iptables -P INPUT ACCEPT", "iptables -A INPUT -p tcp -j DROP", "echo iptables -P INPUT DROP"]
+      }
+    },
+    {
       "id": "nft-flush",
       "severity": "high",
       "reason": "禁止清空或删除 nftables 规则",
@@ -116,6 +148,37 @@
           "psql -h db <<'SQL'\nDROP TABLE users;\nSQL"
         ],
         "ignore": ["mysql -e 'SELECT 1'", "psql -c 'select * from drop_log'", "echo 'DROP DATABASE app'"]
+      }
+    },
+    {
+      "id": "sql-dropdb",
+      "severity": "high",
+      "reason": "禁止通过命令行工具删除数据库",
+      "command": ["dropdb", "mysqladmin", "mariadb-admin"],
+      "pattern": "^dropdb( |$)|^(mysqladmin|mariadb-admin) (.* )?drop( |$)",
+      "examples": {
+        "match": ["dropdb app", "mysqladmin -f drop app", "ssh db1 mariadb-admin -uroot drop app"],
+        "ignore": ["mysqladmin status", "echo dropdb app"]
+      }
+    },
+    {
+      "id": "sql-delete-all",
+      "severity": "high",
+      "reason": "禁止不带条件地删除整张表或整个集合的数据",
+      "command": ["mysql", "mariadb", "psql", "sqlite3", "clickhouse-client", "clickhouse", "cockroach", "sqlcmd", "duckdb", "mongo", "mongosh"],
+      "pattern": "(?i:\\bdelete\\s+from\\s+[\\w.\"`]+(?!\\s+(\\w+\\s+){0,2}(where|using|returning)\\b)(?=\\s*(;|$|\\s)))|\\.(deleteMany|remove)\\(\\s*\\{\\s*\\}\\s*\\)",
+      "examples": {
+        "match": [
+          "psql -c 'DELETE FROM users'",
+          "mysql app -e 'delete from logs;'",
+          "mongosh app --eval 'db.users.deleteMany({})'"
+        ],
+        "ignore": [
+          "psql -c 'DELETE FROM users WHERE id=1'",
+          "psql -c 'DELETE FROM users AS u WHERE u.id=1'",
+          "mongosh app --eval 'db.users.deleteMany({age: 1})'",
+          "echo psql -c 'DELETE FROM users'"
+        ]
       }
     },
     {
