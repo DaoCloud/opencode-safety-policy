@@ -315,6 +315,7 @@ describe("script arguments and interpreter code", () => {
     ["perl -w x.pl", { path: "x.pl", argument: true, language: "perl" }, ["perl"]],
     ["ruby x.rb", { path: "x.rb", argument: true, language: "ruby" }, ["ruby"]],
     ["node x", { path: "x", argument: true, language: "node" }, ["node"]],
+    ["at now -f x.sh", { path: "x.sh", argument: true }, ["at"]],
   ])("%s runs a local script", (input, scriptFile, wrapperChain) => {
     const atom = marker(input)
     expect(atom.scriptFile).toEqual(scriptFile)
@@ -730,6 +731,68 @@ describe("namespace and service wrappers", () => {
     "busybox",
     "busybox --list",
     "busybox --install -s /bin",
+  ])("%s is not unwrapped", (input) => {
+    expect(only(input).wrapperChain).toEqual([])
+  })
+})
+
+describe("launchers", () => {
+  test.each([
+    ["taskset -c 0-3 rm x", ["taskset"]],
+    ["taskset -a -- 0x1 rm x", ["taskset"]],
+    ["chrt -f 10 rm x", ["chrt"]],
+    // util-linux 2.42 makes the priority optional for policies without one.
+    ["chrt -o rm x", ["chrt"]],
+    ["chrt -d -T 5 -P 10 0 rm x", ["chrt"]],
+    ["numactl --cpunodebind=0 -m 0 --phys 1 rm x", ["numactl"]],
+    ["script -qc 'rm x' /dev/null", ["script -c"]],
+    // util-linux permutes options after the log file.
+    ["script /dev/null --command 'rm x'", ["script -c"]],
+    ["script -q -- rm x", ["script"]],
+    // BSD runs the arguments after the log file.
+    ["script -q -t 0 log rm x", ["script"]],
+    ["script -q /dev/null <<<'rm x'", ["script"]],
+    ["strace -f -e trace=file -o /tmp/t rm x", ["strace"]],
+    ["tmux new -d 'rm x'", ["tmux new-session"]],
+    ["tmux -L s new-s -d -s x rm x", ["tmux new-session"]],
+    ["tmux splitw -t 0 -- 'rm x'", ["tmux split-window"]],
+    ["tmux run -b 'rm x'", ["tmux run-shell"]],
+    ["tmux if-shell 'rm x' 'display hi'", ["tmux if-shell"]],
+    ["tmux -c 'rm x'", ["tmux -c"]],
+    ["screen -dmS s rm x", ["screen"]],
+    ["screen -d -m -Logfile log rm x", ["screen"]],
+    ["at now <<<'rm x'", ["at"]],
+    ["at -m -q b now + 1 hour <<<'rm x'", ["at"]],
+    ["batch <<<'rm x'", ["batch"]],
+  ])("%s", (input, wrapperChain) => {
+    expect(only(input)).toMatchObject({ argv: ["rm", "x"], isRemote: false, wrapperChain })
+  })
+
+  test("tmux runs every command separated by ;", () => {
+    expect(atoms("tmux new -d ls \\; neww 'rm x'").map((atom) => atom.argv)).toEqual([["ls"], ["rm", "x"]])
+    expect(atoms("tmux new -d 'ls;' neww 'rm x'").map((atom) => atom.argv)).toEqual([["ls"], ["rm", "x"]])
+  })
+
+  test("strace -o pipes the trace to a shell command", () => {
+    expect(atoms("strace -o '|rm x' ls").map((atom) => atom.argv)).toEqual([["rm", "x"], ["ls"]])
+  })
+
+  test.each([
+    "taskset -p 1",
+    "taskset -cp 0 1",
+    "chrt -p 10 1",
+    "chrt -m",
+    "numactl -H",
+    "script log",
+    "strace -p 1",
+    "tmux ls",
+    "tmux attach -t x",
+    "tmux display -p '#{pane_id}'",
+    "screen -ls",
+    "screen -r rm",
+    "screen -S s -X quit",
+    "at -l",
+    "at -c 3",
   ])("%s is not unwrapped", (input) => {
     expect(only(input).wrapperChain).toEqual([])
   })

@@ -261,6 +261,7 @@ describe("nested opencode", () => {
     ["OPENCODE_DB=/tmp/x.db opencode run x", "OPENCODE_DB=/tmp/x.db"],
     ["sudo OPENCODE_CONFIG_CONTENT='{}' opencode run x", "OPENCODE_CONFIG_CONTENT={}"],
     ["echo $(opencode run --auto x)", "--auto"],
+    ["script -qc 'opencode run --auto x' /dev/null", "--auto"],
   ])("%s is denied", (command, target) => {
     expect(run(command)).toMatchObject({ decision: "deny", ruleId: "self-protect", reason: expect.stringContaining(`（${target}）`) })
   })
