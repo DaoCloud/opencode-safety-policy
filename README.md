@@ -37,11 +37,18 @@
 
 ```json
 {
-  "plugins": [{ "package": "github:DaoCloud/opencode-safety-policy#v0.1.1" }]
+  "plugins": [{ "package": "github:DaoCloud/opencode-safety-policy#semver:*" }]
 }
 ```
 
-重启 OpenCode 后，OpenCode 会从 GitHub 拉取这个 tag，装到 `~/.cache/opencode/npm/` 下。本机需要装有 `git`，并且能访问 GitHub。升级时修改 tag，再重启 OpenCode。
+重启 OpenCode 后，OpenCode 会从 GitHub 拉取最新的 release tag，装到 `~/.cache/opencode/npm/` 下。`main` 分支上还没发版的提交不会被安装。本机需要装有 `git`，并且能访问 GitHub。
+
+OpenCode 加载插件后会检查一次新版本，之后每 24 小时再查一次。发现新版本时不会自动安装，只在插件列表中标记 `update available`。升级方法：
+
+- TUI：输入 `/plugins` 打开插件列表，按 `ctrl+r` 立即检查，选中本插件后按 `ctrl+u` 升级。
+- Desktop：在设置的 Extensions → Plugins 中点 Update。
+
+升级后插件自动重新加载，不用重启 OpenCode。需要固定版本时，把 `#semver:*` 换成 `#v0.1.1` 这样的 tag，固定版本不会提示更新。
 
 ### 离线安装
 
@@ -242,5 +249,5 @@ bun run test:system   # 需要 docker 和本机的 opencode，在一次性容器
 发布流程：
 
 1. 修改 `package.json` 中的 `version`，合入 `main`。
-2. 推送同名 tag，例如 `git tag v0.1.0 && git push origin v0.1.0`。
+2. 确认 `main` 上的 CI 通过后，推送同名 tag，例如 `git tag v0.1.0 && git push origin v0.1.0`。tag 推送后，在线安装的用户就能升级到它，不会等 `release.yml` 跑完。
 3. `release.yml` 跑完全部测试后，把 tgz 和 `SHA256SUMS` 附到 GitHub Release。

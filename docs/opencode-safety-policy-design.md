@@ -570,7 +570,7 @@ opencode-safety-policy/       # 仓库根目录
 {
   "plugins": [
     {
-      "package": "github:DaoCloud/opencode-safety-policy#v0.1.0",
+      "package": "github:DaoCloud/opencode-safety-policy#semver:*",
       "options": {
         "mode": "strict",
         "alwaysProtectSelf": true,
@@ -622,8 +622,9 @@ opencode-safety-policy/       # 仓库根目录
 插件源码位于独立仓库 `DaoCloud/opencode-safety-policy`，目标环境包含联网开发机与离线/内网 GPU 管理跳板机，推荐按场景提供三种分发方式：
 
 1. **开发机 / 联网团队（推荐）：OpenCode 直接从 GitHub tag 安装**
-   - 不使用 npm 源。用户在 `~/.config/opencode/opencode.json` 的 `plugins` 中写 `"package": "github:DaoCloud/opencode-safety-policy#v0.1.0"`。OpenCode 用 npm 的 Arborist 拉取该 tag，按 `files` 打包后装入用户缓存目录（`~/.cache/opencode/npm/`），版本锁定到 tag 对应的 commit。
-   - 本机需要 `git` 并能访问 GitHub。升级时修改 tag 并重启 OpenCode。
+   - 不使用 npm 源。用户在 `~/.config/opencode/opencode.json` 的 `plugins` 中写 `"package": "github:DaoCloud/opencode-safety-policy#semver:*"`。OpenCode 用 npm 的 Arborist 拉取满足该范围的最高 release tag，按 `files` 打包后装入用户缓存目录（`~/.cache/opencode/npm/`），版本锁定到 tag 对应的 commit。`main` 上未打 tag 的提交不会被安装。
+   - 本机需要 `git` 并能访问 GitHub。OpenCode 把不是 commit hash 的 git 引用视为可更新（`packages/util/src/npm.ts`），插件加载后与之后每 24 小时检查一次远端（`packages/core/src/plugin/supervisor.ts`）。发现更高的 tag 时只在插件列表中标记 `update available`，不自动安装。用户在 TUI 的 `/plugins` 中按 `ctrl+u`，或在 Desktop 设置中点 Update 后，OpenCode 安装新版本并重新加载插件，无需重启（已用 OpenCode 2.4.1 实测）。需要固定版本时写 `#vX.Y.Z`，固定版本不会提示更新。
+   - tag 推送后在线用户立即可以升级，不等 `release.yml` 完成，因此只在 `main` 的 CI 通过后打 tag。
    - Arborist 默认会安装 `peerDependencies`。`@opencode/plugin` 由 OpenCode 在运行时提供，所以在 `peerDependenciesMeta` 中标为 optional，避免每次安装都额外拉取它的整棵依赖树（约 180 MB）。
    - 插件装在用户可写的目录中，而且用户级配置中的插件会被项目配置的 `"plugins": ["-*"]` 卸载（已用 OpenCode 2.4.1 实测），所以只适合个人防误操作。需要强制基线时按第 2 点部署。
 2. **跳板机 / 管理主机（统一强制基线，重要：防自动发现冲突与同 ID 空插件劫持）**
