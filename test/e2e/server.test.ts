@@ -38,7 +38,7 @@ const REWRITER = `export default {
 beforeAll(async () => {
   if (!E2E_ENABLED) return
   auditDir = mkdtempSync(path.join(os.tmpdir(), "ocsp-e2e-audit-"))
-  h = new Harness({ auditLogPath: auditLog(), enableServerSlashCommand: true }, [REWRITER])
+  h = new Harness({ mode: "strict", auditLogPath: auditLog(), enableServerSlashCommand: true }, [REWRITER])
   await h.start()
 })
 

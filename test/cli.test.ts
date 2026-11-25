@@ -27,7 +27,7 @@ describe("cli test", () => {
       code: 0,
       stdout: [
         `命令：${command}`,
-        "模式：strict",
+        "模式：relaxed",
         `结果：deny [rm-system-path] ${reason}`,
         "",
         "1. rm -rf /data/*",
@@ -44,7 +44,7 @@ describe("cli test", () => {
     const options = path.join(dir, "options.json")
     writeFileSync(options, JSON.stringify({ mode: "off", protectedEndpoints: { bmcCidrs: ["10.0.0.0/24"] } }))
     const post = "curl -X POST http://10.0.0.5/api"
-    expect(cli(["test", post], { OPENCODE_SAFETY_MODE: "off" }).stdout).toContain("模式：strict\n结果：allow\n")
+    expect(cli(["test", post], { OPENCODE_SAFETY_MODE: "off" }).stdout).toContain("模式：relaxed\n结果：allow\n")
     expect(cli(["test", "--options", options, post]).stdout).toContain("模式：off\n结果：allow\n")
     expect(cli(["test", "--options", options, "--mode", "relaxed", post]).stdout).toContain(
       "模式：relaxed\n结果：ask [protected-endpoint-write]",

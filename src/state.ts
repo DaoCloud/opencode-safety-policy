@@ -75,7 +75,7 @@ export function createModeState(options: ModeStateOptions): ModeState {
     const mode = envMode(env[MODE_ENV])
     if (mode) return { mode, source: "env", locked: false }
     if (options.configMode) return { mode: options.configMode, source: "config", locked: false }
-    return { mode: "strict", source: "default", locked: false }
+    return { mode: "relaxed", source: "default", locked: false }
   }
 
   return {

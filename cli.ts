@@ -4,7 +4,7 @@
  * `bun ./cli.ts test [--mode strict|relaxed|off] [--options <file>] "<cmd>"`.
  *
  * It uses the built-in rules and the current directory as the Location. `--options` reads a JSON file in the
- * `plugins[].options` format. The mode defaults to `strict`; the environment and the runtime state are not read.
+ * `plugins[].options` format. The mode defaults to `relaxed`; the environment and the runtime state are not read.
  */
 
 import { readFileSync } from "node:fs"

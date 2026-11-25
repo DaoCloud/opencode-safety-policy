@@ -18,7 +18,7 @@ cat > opencode.json <<'EOF'
   "plugins": [
     {
       "package": "/ai-workspace/weizhoublue/git/opencode-safety-policy",
-      "options": { "protectedEndpoints": { "bmcCidrs": ["127.0.0.2/32"] } }
+      "options": { "mode": "strict", "protectedEndpoints": { "bmcCidrs": ["127.0.0.2/32"] } }
     }
   ]
 }
@@ -26,7 +26,7 @@ EOF
 opencode
 ```
 
-`protectedEndpoints` 供第 3 节的 HTTP 用例使用。`127.0.0.2:9` 上没有服务监听，即使漏拦，请求也会立即失败。
+第 3 节的预期按 `strict` 编写，所以 `mode` 设为 `strict`，插件默认是 `relaxed`。`protectedEndpoints` 供第 3 节的 HTTP 用例使用。`127.0.0.2:9` 上没有服务监听，即使漏拦，请求也会立即失败。
 
 进入 TUI 后输入 `/safety status`，弹出 Toast `当前模式：strict（source: ...）；最近 24 小时...`，说明插件已加载。
 
@@ -103,7 +103,7 @@ bun /ai-workspace/weizhoublue/git/opencode-safety-policy/cli.ts test --mode rela
 ```
 
 - 输出与 `/safety test` 对话框相同；第二条为 `结果：ask [container-destroy]`。
-- `--mode` 指定模式，优先于 `--options` 中的 `mode`，默认 strict。`--options <file>` 读取与 `opencode.json` 中插件 `options` 相同结构的 JSON。CLI 不读取环境变量。
+- `--mode` 指定模式，优先于 `--options` 中的 `mode`，默认 relaxed。`--options <file>` 读取与 `opencode.json` 中插件 `options` 相同结构的 JSON。CLI 不读取环境变量。
 - 以当前目录作为项目目录。在受保护目录（如本仓库）中运行时，写类命令会因自保护被判为 `deny`，所以在试用目录中运行。
 
 ## 6. 可选：Code Mode
@@ -158,7 +158,7 @@ curl -s -u opencode:$PW "$URL/api/session/$SID/inbox?$Q" | jq -r '.data[].payloa
 
 ## 9. 收尾
 
-- 执行 `/safety strict`。模式状态全局持久化，所有加载了本插件的项目共用。
+- 把模式切回平时使用的模式，如 `/safety relaxed`。模式状态全局持久化，所有加载了本插件的项目共用。
 - 退出 OpenCode，删除 `/tmp/ocsp-try`。
 
 ## 10. 维护约定

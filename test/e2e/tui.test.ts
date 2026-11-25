@@ -47,8 +47,8 @@ describe.skipIf(!E2E_ENABLED)("tui", () => {
   test("reports and switches the mode through toasts", async () => {
     await tui.type("/safety status")
     tui.press(ENTER)
-    await tui.waitFor("当前模式：strict（source: default）")
-    await tui.waitForToast("当前模式：strict（source: default）；最近 24 小时无拦截")
+    await tui.waitFor("当前模式：relaxed（source: default）")
+    await tui.waitForToast("当前模式：relaxed（source: default）；最近 24 小时无拦截")
     await tui.type("/safety relaxed --ttl 1m")
     tui.press(ENTER)
     await tui.waitFor("当前模式：relaxed（source: runtime，1 分钟后回落）")

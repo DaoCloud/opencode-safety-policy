@@ -23,7 +23,7 @@ let h: Harness
 beforeAll(async () => {
   if (!E2E_ENABLED) return
   // Nothing listens on 127.0.0.2:9, so a request that runs fails at once.
-  h = new Harness({ protectedEndpoints: { bmcCidrs: ["127.0.0.2/32"] } })
+  h = new Harness({ mode: "strict", protectedEndpoints: { bmcCidrs: ["127.0.0.2/32"] } })
   h.write("danger.sh", "rm -rf /data\n")
   h.write("ok.sh", "echo SCRIPT-OK\n")
   h.write("body-cd.sh", "cd /\nrm -rf etc\n")

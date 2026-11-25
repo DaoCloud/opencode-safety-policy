@@ -4,8 +4,8 @@
 
 ### 0.1 运行模式
 共提供 **3 种全局运行模式**（跨 Session、跨项目、重启持久化，通过 TUI `/safety` 切换，不暴露为 LLM Tool），支持 `--ttl` 临时降级到期自动回落及 `OPENCODE_SAFETY_LOCK_MODE` 环境变量硬锁定（同用户进程可经本机 Server API 调用 RPC，因此**只有环境变量锁定才是"Agent 无法关闭防护"的硬保证**，详见 [1.2](#12-非目标与安全边界)）：
-- **`strict`（严格，默认）**：面向日常生产运维，致命与高危操作直接拒绝（`deny`），中危本机清理与未知远端命令弹窗确认（`ask`），纯只读巡检直接放行（`allow`）。
-- **`relaxed`（宽松）**：面向排障/变更窗口，仅硬阻断致命破坏操作，高危操作降级为弹窗确认，常见本机清理与一般 SSH 命令放行。
+- **`strict`（严格）**：面向生产环境、无人值守或开启自动审批的场景，致命与高危操作直接拒绝（`deny`），中危本机清理与未知远端命令弹窗确认（`ask`），纯只读巡检直接放行（`allow`）。
+- **`relaxed`（宽松，默认）**：面向有人值守的日常使用与排障/变更窗口，仅硬阻断致命破坏操作，高危操作降级为弹窗确认，常见本机清理与一般 SSH 命令放行。
 - **`off`（关闭）**：临时放行所有命令（默认 `alwaysProtectSelf: true`，仍阻止 Agent 篡改插件与安全配置）。
 
 ### 0.2 覆盖的目标机器与环境（6 类）
@@ -391,7 +391,7 @@
 
 ### 5.1 三种模式的行为矩阵
 
-| 风险等级 / 场景 | `strict`（严格，默认） | `relaxed`（宽松） | `off`（关闭） |
+| 风险等级 / 场景 | `strict`（严格） | `relaxed`（宽松，默认） | `off`（关闭） |
 |---|---|---|---|
 | **致命破坏命令（`critical`）**（如 `rm -rf /`、`mkfs`、`dd of=/dev/`、`kubectl delete ns`、`onie-select`、Redfish `VirtualMedia.InsertMedia`/`ComputerSystem.Reset`/`BootSourceOverride`、`ipmitool power off`） | `deny`（硬阻断） | `deny`（仍硬阻断，可选配置降级为 `ask`） | `allow` |
 | **高危删除/停服/变更（`high`）**（远端 `rm`、`kubectl delete pod`、`docker stop`、`systemctl stop`、`nv config apply`、UFM REST 写请求、发往 `protectedEndpoints` 的写请求） | `deny`（硬阻断） | `ask`（弹窗人工确认） | `allow` |
@@ -422,12 +422,12 @@
   ```
 - **生效优先级（高 → 低）**：
   1. **环境变量强制锁定**：`OPENCODE_SAFETY_LOCK_MODE=strict`（运维可在跳板机全局锁定，禁止运行时关闭）
-  2. **运行时 Slash Command 状态**（`ctx.storage` 中的 `safety:state`，支持 `--ttl`，过期自动回落到 `previousMode` 或 `strict`）
+  2. **运行时 Slash Command 状态**（`ctx.storage` 中的 `safety:state`，支持 `--ttl`，过期自动回落到 `previousMode` 或下一优先级）
   3. **环境变量默认覆盖**：`OPENCODE_SAFETY_MODE=strict|relaxed|off`
   4. **配置文件 `opencode.json` 中的 `plugins[].options.mode`**（修改 `options` 会变更插件 `revision` 触发整插件重载；`rulesFile` 由插件在每次加载前按文件 `mtime` 按需刷新）
-  5. **内置默认值**：`strict`
-- **TTL 回落**：`expiresAt` 为 `null` 表示不过期。过期后恢复到 `previousMode`；`previousMode` 为 `null` 时按下一优先级（环境变量 → 配置 → `strict`）。不带 TTL 切换时 `previousMode` 为 `null`。带 TTL 切换时，若当前状态不带 TTL，`previousMode` 取当前模式；若当前状态也带 TTL，则继承它的 `previousMode`，避免临时模式在叠加切换后变成永久模式。
-- **容错**：环境变量取值非法时按 `strict` 处理（`LOCK_MODE` 非法即锁定为 `strict`）；`ctx.storage` 读取失败时按 `strict` 处理；`safety:state` 内容非法时视为不存在。
+  5. **内置默认值**：`relaxed`。有人值守时高危操作仍需人工确认，日常使用中的误拒更少。OpenCode 的自动审批会放行 `ask`，因此生产环境、无人值守或开启自动审批时，应通过 `options.mode`、`OPENCODE_SAFETY_MODE` 或 `OPENCODE_SAFETY_LOCK_MODE` 设为 `strict`
+- **TTL 回落**：`expiresAt` 为 `null` 表示不过期。过期后恢复到 `previousMode`；`previousMode` 为 `null` 时按下一优先级（环境变量 → 配置 → 默认值）。不带 TTL 切换时 `previousMode` 为 `null`。带 TTL 切换时，若当前状态不带 TTL，`previousMode` 取当前模式；若当前状态也带 TTL，则继承它的 `previousMode`，避免临时模式在叠加切换后变成永久模式。
+- **容错**：环境变量取值非法时按 `strict` 处理，不用默认值（`LOCK_MODE` 非法即锁定为 `strict`）；`ctx.storage` 读取失败时同样按 `strict` 处理；`safety:state` 内容非法时视为不存在。
 - **`rulesFile`**：须为绝对路径数组，文件格式与内置规则相同。按 `mtime`、大小和 inode 判断变更后重新加载。文件缺失、JSON 非法、规则非法或 `id` 与其他规则重复时，每次决策都会报错，由 hook 层按失败关闭处理，直到文件修复。
 - **配置失败关闭**：`options` 非法或规则无法加载时，插件照常加载并注册 hook，但除 `off` 模式外拒绝所有工具调用（不只是 `shell`，因为无法确定哪些工具有规则），原因为 `[safety-policy:config-error] <出错的字段或文件及错误>`。模式仍按环境变量、运行时状态与默认值解析，`options.mode` 此时不生效。判定过程本身抛错时同样拒绝该调用，原因为 `[safety-policy:policy-error] <错误>`。
 
@@ -445,7 +445,7 @@
    - TUI 插件同时通过 `ctx.data.on("permission.asked", ...)` 监听审批事件，对 `message` 以 `[safety-policy:` 开头的请求弹 Toast 展示规则原因（TUI 审批弹窗本身不渲染 `message`）。
    - **完全不写入 `session_inbox`**（不使用 `delivery: "queue"` 的 `session.synthetic`，彻底杜绝空闲或运行结束时触发幽灵 LLM 回合及过滤后引发的 400 错误，也避免 TUI 自动补全出现重复 `/safety`）。
 2. **终端 CLI 与无 TUI 场景兜底**：
-   - 独立本地 CLI（`bun ./cli.ts test [--mode <mode>] [--options <file>] "<cmd>"`）供规则维护者离线回归和排障，输出与 `/safety test` 相同。它使用内置规则，工作目录为当前目录。`--mode` 选择模式，默认 `strict`，不读取环境变量和运行时状态。`--options` 读取与 `plugins[].options` 格式相同的 JSON 文件，例如带 `rulesFile` 或 `protectedEndpoints` 的配置。
+   - 独立本地 CLI（`bun ./cli.ts test [--mode <mode>] [--options <file>] "<cmd>"`）供规则维护者离线回归和排障，输出与 `/safety test` 相同。它使用内置规则，工作目录为当前目录。`--mode` 选择模式，默认 `relaxed`，不读取环境变量和运行时状态。`--options` 读取与 `plugins[].options` 格式相同的 JSON 文件，例如带 `rulesFile` 或 `protectedEndpoints` 的配置。
    - 仅当用户在纯 Desktop/Web App（不运行 TUI）场景显式配置 `options.enableServerSlashCommand: true` 时，服务端才额外通过 `ctx.command.transform` 注册名为 `safety` 的命令作为降级入口（`src/command.ts`），客户端经 `POST /api/session/:sessionID/command` 调用：
      - 参数解析与 TUI 相同，执行与 RPC 相同的 `status`、`setMode`、`test` 逻辑，锁定时的拒绝与审计记录也相同。用法错误或模式被锁定时，命令以错误结束，客户端用错误 Toast 显示原因，并把输入放回输入框。
      - Session 空闲时，结果写成一条 `session.synthetic`：`text` 与 `description` 都是结果文本，`metadata: { source: "safety-policy" }`，`delivery: "steer"`，`resume: false`。TUI 和 App 在它入队时就把带 `description` 的 synthetic 显示为一条 Notice。它不唤醒 Session，随下一条真实用户消息一起被消费，不会产生单独的 LLM 回合。
@@ -458,7 +458,7 @@
 | `/safety` 或 `/safety status` | 通过 Toast/Dialog 即时显示当前全局模式、来源、是否被环境变量锁定、TTL 剩余时间，以及最近 24 小时的拒绝、需确认次数和命中最多的规则（零 LLM 副作用） |
 | `/safety strict` | 立即全局切换为严格模式（清除 TTL） |
 | `/safety relaxed` | 切换为宽松模式 |
-| `/safety relaxed --ttl 30m` | 切换为宽松模式，30 分钟后自动回落到切换前的模式（规则见 5.2，默认 `strict`） |
+| `/safety relaxed --ttl 30m` | 切换为宽松模式，30 分钟后自动回落到切换前的模式（规则见 5.2） |
 | `/safety off --ttl 15m` | 临时关闭 15 分钟，到期自动回落（防止忘记切回） |
 | `/safety test <cmd>` | 干跑测试某条命令在当前模式下的拆壳结果与命中规则（TUI 弹窗展示，亦可用 `bun ./cli.ts test "<cmd>"`）。`test` 之后的文本原样作为命令；若整体包在一对引号中且内部没有同种引号，则去掉外层引号 |
 

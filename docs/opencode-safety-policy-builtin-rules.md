@@ -105,7 +105,7 @@
 | `high` | 拒绝 | 弹出审批 | 破坏性或会中断业务，但偶尔确有需要 | `kubectl delete`、删除容器、`systemctl stop`、主机重启、`nv config apply`、`iptables -F`、SQL `DROP`、远端 `rm` |
 | `medium` | 弹出审批 | 放行 | 常见的日常操作，确认一次即可 | 本机 `rm`、`kill`、`nv set` 暂存、`kubectl patch`、`nvidia-smi` 改配置 |
 
-`strict` 是默认模式。日常运维中频繁出现的合法命令如果定成 `high`，在 `strict` 下会被直接拒绝，用户最后只能关掉插件。拿不准时，在 `high` 和 `medium` 之间权衡误报的代价。
+默认模式是 `relaxed`，但生产环境和无人值守的用户会切到 `strict`。日常运维中频繁出现的合法命令如果定成 `high`，在 `strict` 下会被直接拒绝，这些用户最后只能关掉插件。拿不准时，在 `high` 和 `medium` 之间权衡误报的代价。
 
 ### 3.4 选择匹配方式
 

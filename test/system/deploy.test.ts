@@ -217,7 +217,7 @@ describe.skipIf(!SYSTEM_ENABLED)("system deployment", () => {
       system([DEPLOY, DISCOVERED], { plugins: [PLUGIN] })
       h = harness()
       await h.start()
-      expect(await status(h)).toMatchObject({ mode: "strict", source: "default" })
+      expect(await status(h)).toMatchObject({ mode: "relaxed", source: "default" })
       expect(await listed(h)).toEqual([
         { path: DISCOVERED, state: { status: "active" } },
         { path: DEPLOY, state: { status: "failed", error: `Duplicate plugin ID: ${ID}` } },

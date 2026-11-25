@@ -15,11 +15,13 @@
 
 | 模式 | 行为 |
 |---|---|
-| `strict`（默认） | 致命与高危操作直接拒绝。中危的本机清理和未知远端命令弹出审批，只读巡检放行 |
-| `relaxed` | 只拒绝致命操作，高危操作弹出审批，常见本机清理与一般 SSH 命令放行 |
+| `strict` | 致命与高危操作直接拒绝。中危的本机清理和未知远端命令弹出审批，只读巡检放行 |
+| `relaxed`（默认） | 只拒绝致命操作，高危操作弹出审批，常见本机清理与一般 SSH 命令放行 |
 | `off` | 全部放行，但仍然阻止篡改插件和安全配置 |
 
 各类操作在每种模式下的处置见设计文档 [5.1](docs/opencode-safety-policy-design.md#51-三种模式的行为矩阵)。
+
+`relaxed` 下高危操作只弹出审批，OpenCode 的自动审批会直接放行它们。生产环境、无人值守或开启自动审批时，在插件配置中设置 `"options": { "mode": "strict" }`。需要禁止切换时，再设置环境变量 `OPENCODE_SAFETY_LOCK_MODE=strict`。
 
 ## 安装
 
@@ -95,7 +97,7 @@ tar xzf daocloud-opencode-safety-policy-$VERSION.tgz -C ~/.config/opencode/safet
 
 ### 确认安装
 
-在 TUI 中输入 `/safety status`。如果弹出 Toast `当前模式：strict（source: ...）`，说明插件已经加载。
+在 TUI 中输入 `/safety status`。如果弹出以 `当前模式：` 开头的 Toast，例如新安装时的 `当前模式：relaxed（source: default）`，说明插件已经加载。
 
 ## 使用
 
@@ -119,7 +121,9 @@ tar xzf daocloud-opencode-safety-policy-$VERSION.tgz -C ~/.config/opencode/safet
 2. `/safety` 设置的模式
 3. 环境变量 `OPENCODE_SAFETY_MODE`
 4. 插件配置中的 `options.mode`
-5. 默认的 `strict`
+5. 默认的 `relaxed`
+
+读取模式状态失败时，插件按 `strict` 处理。上面两个环境变量的值非法时也按 `strict` 处理。
 
 ### 离线判定
 
@@ -137,7 +141,7 @@ bun ~/.config/opencode/safety-policy/cli.ts test --mode relaxed "ssh node1 'kube
 
 | 字段 | 说明 |
 |---|---|
-| `mode` | 默认模式，可选 `strict`、`relaxed`、`off`，默认为 `strict` |
+| `mode` | 默认模式，可选 `strict`、`relaxed`、`off`，默认为 `relaxed` |
 | `alwaysProtectSelf` | `off` 模式下是否仍然保护插件和安全配置，默认为 `true` |
 | `protectedEndpoints` | 受保护的管理端点，分为 `bmcCidrs`、`ufmHosts`、`nicoHosts` 三类，每项是 IP、CIDR 或主机名。发往这些端点的写请求在 `strict` 下拒绝，在 `relaxed` 下弹出审批 |
 | `rulesFile` | 外挂规则文件，是绝对路径的数组。文件修改后自动重新加载 |

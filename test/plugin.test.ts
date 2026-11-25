@@ -103,7 +103,7 @@ describe("shell", () => {
   })
 
   test("marks an ask until execute.after without prompting itself", async () => {
-    const s = await setup()
+    const s = await setup({ mode: "strict" })
     const event = call("shell", { command: "rm /tmp/x" })
     await s.before(event)
     expect(s.markers.get("ses_1", event.id)).toMatchObject({
@@ -153,7 +153,7 @@ describe("other tools", () => {
   const force = { directory: "/repo/wt", force: true }
 
   test("strict denies forced worktree removal", async () => {
-    const s = await setup()
+    const s = await setup({ mode: "strict" })
     await expect(s.before(call("opencode_worktree_remove", force))).rejects.toThrow("[safety-policy:worktree-remove-force]")
     await s.before(call("opencode_worktree_remove", { directory: "/repo/wt" }))
     expect(s.asserts).toEqual([])
@@ -243,7 +243,7 @@ describe("evaluate", () => {
   const source = (id: string) => ({ type: "tool" as const, messageID: "msg_1", id })
 
   test("forces the built-in prompt for a marked shell call that a saved rule allows", async () => {
-    const s = await setup()
+    const s = await setup({ mode: "strict" })
     const event = call("shell", { command: "rm /tmp/x" })
     await s.before(event)
     const request = { action: "shell", resources: ["rm /tmp/x"], source: source(event.id) }
@@ -296,7 +296,7 @@ describe("evaluate", () => {
   })
 
   test("matches nested Code Mode calls by session and command text", async () => {
-    const s = await setup()
+    const s = await setup({ mode: "strict" })
     await s.before(call("shell", { command: "ls && rm /tmp/x" }))
     const nested = { action: "shell", source: source("call_execute") }
     expect((await s.evaluate({ ...nested, resources: ["ls", "rm /tmp/x"] })).effect).toBe("ask")
@@ -543,7 +543,7 @@ describe("server command", () => {
     const s = await setupCommand()
     await s.safety("")
     await s.safety("status")
-    const text = "当前模式：strict（source: default）；最近 24 小时无拦截"
+    const text = "当前模式：relaxed（source: default）；最近 24 小时无拦截"
     expect(s.synthetics).toEqual([posted(text), posted(text)])
   })
 
@@ -620,7 +620,7 @@ describe("rpc", () => {
 
   test("status reports the mode without an expiry", async () => {
     const s = await setupRpc()
-    expect(await s.rpc("status", {})).toStrictEqual({ mode: "strict", source: "default", locked: false, recent: NONE })
+    expect(await s.rpc("status", {})).toStrictEqual({ mode: "relaxed", source: "default", locked: false, recent: NONE })
   })
 
   test("setMode returns the new status and a TTL falls back", async () => {
@@ -670,11 +670,11 @@ describe("rpc", () => {
     ;(s.ctx.storage as { scan: unknown }).scan = async () => {
       throw new Error("disk I/O error")
     }
-    expect(await s.rpc("status", {})).toStrictEqual({ mode: "strict", source: "default", locked: false })
+    expect(await s.rpc("status", {})).toStrictEqual({ mode: "relaxed", source: "default", locked: false })
   })
 
   test("test dry-runs a shell call in the current mode without counting it", async () => {
-    const s = await setupRpc()
+    const s = await setupRpc({ [MODE_ENV]: "strict" })
     expect(await s.rpc("test", { command: `ssh n1 "sudo bash -c 'rm -rf /data/*'" && ls` })).toStrictEqual({
       mode: "strict",
       decision: "deny",
@@ -705,7 +705,7 @@ describe("rpc", () => {
   test("test reports config errors like the hooks", async () => {
     const s = await setupRpc({}, { mode: "bogus" })
     expect(await s.rpc("test", { command: "ls" })).toStrictEqual({
-      mode: "strict",
+      mode: "relaxed",
       decision: "deny",
       ruleId: "config-error",
       reason: expect.stringContaining("mode"),
@@ -721,7 +721,7 @@ describe("audit", () => {
 
   test("logs each deny and ask with its context, and no allowed call", async () => {
     const file = path.join(root, "audit-hooks.jsonl")
-    const s = await setup({ options: { auditLogPath: file } })
+    const s = await setup({ mode: "strict", options: { auditLogPath: file } })
     const rm = call("shell", { command: "rm -rf /data" })
     await expect(s.before(rm)).rejects.toThrow("[safety-policy:rm-system-path]")
     const ask = call("shell", { command: "rm /tmp/x", workdir: "/tmp" })
@@ -779,7 +779,7 @@ describe("audit", () => {
   })
 
   test("an unwritable log never changes a decision", async () => {
-    const s = await setup({ options: { auditLogPath: path.join(root, "missing", "audit.jsonl") } })
+    const s = await setup({ mode: "strict", options: { auditLogPath: path.join(root, "missing", "audit.jsonl") } })
     await expect(s.before(call("shell", { command: "rm -rf /data" }))).rejects.toThrow("[safety-policy:rm-system-path]")
     const ask = call("shell", { command: "rm /tmp/x" })
     await s.before(ask)
@@ -792,7 +792,7 @@ describe("audit", () => {
 
 describe("stats", () => {
   test("count the denies and asks of both hooks once", async () => {
-    const s = await setup({ options: { protectedEndpoints: { bmcCidrs: ["10.0.0.0/24"] } } })
+    const s = await setup({ mode: "strict", options: { protectedEndpoints: { bmcCidrs: ["10.0.0.0/24"] } } })
     await expect(s.before(call("shell", { command: "rm -rf /etc" }))).rejects.toThrow()
     await expect(s.before(call("shell", { command: "rm -rf /var" }))).rejects.toThrow()
     const marked = call("shell", { command: "rm /tmp/x" })

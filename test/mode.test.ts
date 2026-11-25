@@ -21,8 +21,8 @@ function setup(options: { env?: Record<string, string>; configMode?: "strict" | 
 }
 
 describe("mode priority", () => {
-  test("defaults to strict", async () => {
-    expect(await setup().state.resolve()).toEqual({ mode: "strict", source: "default", locked: false })
+  test("defaults to relaxed", async () => {
+    expect(await setup().state.resolve()).toEqual({ mode: "relaxed", source: "default", locked: false })
   })
 
   test("lock > runtime > env > config", async () => {
@@ -78,7 +78,7 @@ describe("TTL", () => {
     clock.t += MINUTE
     await state.setMode("off", { ttlMs: 10 * MINUTE })
     clock.t += 10 * MINUTE
-    expect(await state.resolve()).toMatchObject({ mode: "strict", source: "default" })
+    expect(await state.resolve()).toMatchObject({ mode: "relaxed", source: "default" })
   })
 
   test("setting a mode without ttl clears the TTL", async () => {
@@ -96,10 +96,10 @@ describe("storage", () => {
     const { storage } = memoryStorage()
     const a = createModeState({ storage, env: {}, now: () => clock.t, cacheMs: 1000 })
     const b = createModeState({ storage, env: {}, now: () => clock.t, cacheMs: 1000 })
-    expect((await b.resolve()).mode).toBe("strict")
+    expect((await b.resolve()).mode).toBe("relaxed")
     await a.setMode("off")
     expect((await a.resolve()).mode).toBe("off")
-    expect((await b.resolve()).mode).toBe("strict")
+    expect((await b.resolve()).mode).toBe("relaxed")
     clock.t += 1000
     expect((await b.resolve()).mode).toBe("off")
   })

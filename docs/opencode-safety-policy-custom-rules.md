@@ -73,7 +73,7 @@
 
 ```text
 命令：ssh admin@jump 'sudo /usr/local/bin/nico-cli node wipe n1'
-模式：strict
+模式：relaxed
 结果：deny [team-nico-wipe] 禁止通过 Agent 擦除或重置 NICo 节点
 
 1. /usr/local/bin/nico-cli node wipe n1
@@ -146,7 +146,7 @@ MCP 工具等非 shell 工具的调用也按一条原子命令处理，见[第 6
 | `medium` | 弹出审批 | 放行 | 放行 |
 
 - `critical`：不可逆，或会影响整台主机、整个集群，任何时候都不应由 Agent 执行。例如擦除节点、格式化磁盘。
-- `high`：破坏性操作，但偶尔确有需要。用户切到 `relaxed` 后可以逐条审批放行。例如删除 Kubernetes 资源、重启服务。
+- `high`：破坏性操作，但偶尔确有需要。`relaxed` 下可以逐条审批放行。例如删除 Kubernetes 资源、重启服务。
 - `medium`：常见的日常操作，`strict` 下需要确认一次。例如删除本机工作区的文件。
 
 OpenCode 的自动审批会放行 `ask`，但不会放行 `deny`。无人值守时也绝不能执行的操作，用 `critical` 或 `extraDeny`。
@@ -402,7 +402,7 @@ Agent 无法修改 `rulesFile` 中的文件和 `~/.config/opencode/` 下的配�
 ```bash
 echo '{ "rulesFile": ["/home/alice/.config/opencode/safety-rules.json"] }' > /tmp/safety-options.json
 cd ~/work
-bun ~/.config/opencode/safety-policy/cli.ts test --options /tmp/safety-options.json "nico-cli node wipe n1"
+bun ~/.config/opencode/safety-policy/cli.ts test --mode strict --options /tmp/safety-options.json "nico-cli node wipe n1"
 bun ~/.config/opencode/safety-policy/cli.ts test --mode relaxed --options /tmp/safety-options.json "nico-cli node wipe n1"
 ```
 
