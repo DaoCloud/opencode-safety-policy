@@ -748,11 +748,11 @@ describe("launchers", () => {
     ["script -qc 'rm x' /dev/null", ["script -c"]],
     // util-linux permutes options after the log file.
     ["script /dev/null --command 'rm x'", ["script -c"]],
-    ["script -q -- rm x", ["script"]],
+    ["script -q /dev/null -- rm x", ["script"]],
     // BSD runs the arguments after the log file.
-    ["script -q -t 0 log rm x", ["script"]],
+    ["script -q /dev/null rm x", ["script"]],
     ["script -q /dev/null <<<'rm x'", ["script"]],
-    ["strace -f -e trace=file -o /tmp/t rm x", ["strace"]],
+    ["strace -f -e trace=file -o /dev/null rm x", ["strace"]],
     ["tmux new -d 'rm x'", ["tmux new-session"]],
     ["tmux -L s new-s -d -s x rm x", ["tmux new-session"]],
     ["tmux splitw -t 0 -- 'rm x'", ["tmux split-window"]],
@@ -760,7 +760,6 @@ describe("launchers", () => {
     ["tmux if-shell 'rm x' 'display hi'", ["tmux if-shell"]],
     ["tmux -c 'rm x'", ["tmux -c"]],
     ["screen -dmS s rm x", ["screen"]],
-    ["screen -d -m -Logfile log rm x", ["screen"]],
     ["at now <<<'rm x'", ["at"]],
     ["at -m -q b now + 1 hour <<<'rm x'", ["at"]],
     ["batch <<<'rm x'", ["batch"]],
@@ -775,6 +774,19 @@ describe("launchers", () => {
 
   test("strace -o pipes the trace to a shell command", () => {
     expect(atoms("strace -o '|rm x' ls").map((atom) => atom.argv)).toEqual([["rm", "x"], ["ls"]])
+  })
+
+  test.each([
+    // Without a log file, script writes ./typescript.
+    "script -q -- rm x",
+    "script -q -t 0 log rm x",
+    "script -qc 'rm x' log",
+    "script -q /dev/null -O log -c 'rm x'",
+    "strace -f -o /tmp/t rm x",
+    "screen -d -m -Logfile log rm x",
+    "screen -dmL rm x",
+  ])("%s also judges the launcher, which writes a log file", (input) => {
+    expect(atoms(input).map((atom) => atom.argv[0])).toEqual([input.split(" ")[0], "rm"])
   })
 
   test.each([

@@ -211,6 +211,7 @@ tar xzf daocloud-opencode-safety-policy-$VERSION.tgz -C ~/.config/opencode/safet
 - 用户在 TUI 中直接输入的 `!命令` 不经过插件。
 - OpenCode 的自动审批会放行 `ask`，但不会放行 `deny`。无人值守时绝不能放行的操作，要配置成 `deny`。
 - 远端已有脚本（如 `ssh host /opt/cleanup.sh`）的内容不可见，插件按未知远端命令处理。
+- 插件只拆开设计文档 [3.1](docs/opencode-safety-policy-design.md#31-四阶段处理流水线) Stage 3 列出的包装命令。其他启动器（如 `unbuffer`、`pkexec`、`uv run`、`srun`）后面的命令不可见。经 `tmux send-keys`、`screen -X stuff` 发给已运行会话的命令也不分析。
 - macOS 的文件系统默认不区分大小写，但规则和受保护路径都按大小写敏感比较。`~/.config/OpenCode/` 这类改了大小写的路径和 `KUBECTL delete` 这类改了大小写的命令名可以绕过检查。
 
 完整说明见设计文档 [1.2](docs/opencode-safety-policy-design.md#12-非目标与安全边界)。

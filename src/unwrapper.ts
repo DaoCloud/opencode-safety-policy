@@ -538,16 +538,19 @@ function commandFrom(label: string, args: string[], expanded: boolean[], start: 
 }
 
 /**
- * Skips the options of `spec` and unwraps the rest. `skip` rejects options after which no command runs, and
- * `operand` accepts a first positional that comes before the command.
+ * Skips the options of `spec` and unwraps the rest. `skip` rejects options after which no command runs,
+ * `operand` accepts a first positional that comes before the command, and `keep` marks options that make the
+ * wrapper write a file itself, so that it is judged too.
  */
 function optionsThen(
   label: string,
   spec: OptionSpec,
   skip?: (option: ParsedOption, arg: string) => boolean,
   operand?: (arg: string) => boolean,
+  keep?: (arg: string) => boolean,
 ): Unwrapper {
   return (args, expanded) => {
+    let writes = false
     let i = 0
     while (i < args.length) {
       if (args[i] === "--") {
@@ -557,11 +560,12 @@ function optionsThen(
       const option = readOption(args, i, spec)
       if (!option) break
       if (skip?.(option, args[i]!)) return []
+      if (keep?.(args[i]!)) writes = true
       i = option.next
     }
     if (i < args.length && operand?.(args[i]!)) i++
     if (i >= args.length) return []
-    return [{ label, inner: { argv: args.slice(i), expanded: expanded.slice(i) } }]
+    return [{ label, inner: { argv: args.slice(i), expanded: expanded.slice(i) }, ...(writes && { keep: true }) }]
   }
 }
 
@@ -1356,32 +1360,49 @@ function watch(args: string[], expanded: boolean[]): Layer[] {
   return [{ label: "watch", inner: { script: args.slice(i).join(" ") } }]
 }
 
+const SCRIPT_LOGS = /^(-[BIOTt]|--(log-io|log-in|log-out|log-timing|timing))$/
+
 /**
  * `script` runs `-c` or the joined command after `--` with a shell, and an interactive shell on stdin without one.
- * BSD `script file command...` runs the command itself; util-linux rejects a second positional.
+ * BSD `script file command...` runs the command itself; util-linux rejects a second positional. The session is
+ * logged to `./typescript` unless a log file is given, so `script` is judged too unless every log is `/dev/null`.
  */
 function script(args: string[], expanded: boolean[], stdin?: string, piped?: Piped): Layer[] {
-  let file = false
+  const logs: string[] = []
+  let command: string | undefined
+  let file: string | undefined
   let i = 0
   while (i < args.length && args[i] !== "--") {
     const option = readOption(args, i, OPTION_SPECS.script)
-    if (option?.name === "-c" || option?.name === "--command") {
-      return option.value === undefined ? [] : [{ label: "script -c", inner: { script: option.value } }]
+    if (!option && file !== undefined) break
+    if (!option) {
+      file = args[i++]
+      continue
     }
-    if (option) i = option.next
-    else if (file) return [{ label: "script", inner: { argv: args.slice(i), expanded: expanded.slice(i) } }]
-    else {
-      file = true
-      i++
-    }
+    if (option.name === "-c" || option.name === "--command") command = option.value
+    else if (SCRIPT_LOGS.test(option.name) && option.value !== undefined) logs.push(option.value)
+    i = option.next
   }
-  if (i + 1 < args.length) return [{ label: "script", inner: { script: args.slice(i + 1).join(" ") } }]
-  return stdinLayers("script", stdin, piped)
+  if (file !== undefined) logs.push(file)
+  const keep = !logs.length || logs.some((log) => log !== "/dev/null")
+  const layers: Layer[] =
+    command !== undefined
+      ? [{ label: "script -c", inner: { script: command } }]
+      : i < args.length && args[i] !== "--"
+        ? [{ label: "script", inner: { argv: args.slice(i), expanded: expanded.slice(i) } }]
+        : i + 1 < args.length
+          ? [{ label: "script", inner: { script: args.slice(i + 1).join(" ") } }]
+          : stdinLayers("script", stdin, piped)
+  return keep ? layers.map((layer) => ({ ...layer, keep: true })) : layers
 }
 
-/** `strace [options] command...`; `-o |command` (or `!command`) also pipes the trace to a shell command. */
+/**
+ * `strace [options] command...`; `-o |command` (or `!command`) also pipes the trace to a shell command, and `strace`
+ * is judged too when `-o` writes a file.
+ */
 function strace(args: string[], expanded: boolean[]): Layer[] {
   const layers: Layer[] = []
+  let keep = false
   let i = 0
   while (i < args.length) {
     if (args[i] === "--") {
@@ -1391,13 +1412,14 @@ function strace(args: string[], expanded: boolean[]): Layer[] {
     const option = readOption(args, i, OPTION_SPECS.strace)
     if (!option) break
     const value = option.value ?? ""
-    if ((option.name === "-o" || option.name === "--output") && /^[|!]/.test(value)) {
-      layers.push({ label: "strace -o", inner: { script: value.slice(1) } })
+    if (option.name === "-o" || option.name === "--output") {
+      if (/^[|!]/.test(value)) layers.push({ label: "strace -o", inner: { script: value.slice(1) } })
+      else if (value !== "/dev/null") keep = true
     }
     i = option.next
   }
   if (i < args.length) layers.push({ label: "strace", inner: { argv: args.slice(i), expanded: expanded.slice(i) } })
-  return layers
+  return keep ? layers.map((layer) => ({ ...layer, keep: true })) : layers
 }
 
 // tmux commands that run a shell command, with their alias and the flags that take a value. The spawning ones run
@@ -1947,11 +1969,14 @@ const WRAPPERS: Record<string, Unwrapper> = {
     (arg) => /^\d+$/.test(arg),
   ),
   numactl: optionsThen("numactl", OPTION_SPECS.numactl),
-  // `screen -ls`, `-wipe`, `-r`, `-x`, `-X`, `-Q` and `-v` attach, query or send to sessions instead.
+  // `screen -ls`, `-wipe`, `-r`, `-x`, `-X`, `-Q` and `-v` attach, query or send to sessions instead. `-L` (also in
+  // `-Logfile`) logs the window to a file.
   screen: optionsThen(
     "screen",
     OPTION_SPECS.screen,
     (_, arg) => /^-(ls|list|wipe)$/.test(arg) || /[rxXQv]/.test(shortFlags(arg, OPTION_SPECS.screen)),
+    undefined,
+    (arg) => shortFlags(arg, OPTION_SPECS.screen).includes("L"),
   ),
   script,
   strace,
