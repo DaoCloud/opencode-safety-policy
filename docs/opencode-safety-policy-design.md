@@ -311,6 +311,8 @@
 2. **外挂独立规则文件**（在 `opencode.json` 中配置 `rulesFile`，运维/个人直接编辑 JSON 即可，无需改动插件源码）；
 3. **`opencode.json` 内联扩展**（`extraDeny`、`extraAsk`、`extraAllow`、`protectedEndpoints`、`sshReadOnlyAllowlist`，支持热重载）。
 
+具体写法见[自定义规则指南](opencode-safety-policy-custom-rules.md)（第 2、3 层）和[内置规则开发指南](opencode-safety-policy-builtin-rules.md)（第 1 层）。
+
 ### 4.1 声明式规则格式（人工扩展极简）
 
 90% 的常规命令拦截只需在 JSON 中追加一条声明对象，无需编写 TypeScript 逻辑：

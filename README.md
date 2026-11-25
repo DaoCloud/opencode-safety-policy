@@ -189,7 +189,7 @@ bun ~/.config/opencode/safety-policy/cli.ts test --mode relaxed "ssh node1 'kube
 
 ## 扩展规则
 
-规则文件的格式是 `{ "rules": [...] }`：
+在本机增加规则时，写一个规则文件，把它的绝对路径加入 `rulesFile`。文件格式是 `{ "rules": [...] }`：
 
 ```json
 {
@@ -210,16 +210,12 @@ bun ~/.config/opencode/safety-policy/cli.ts test --mode relaxed "ssh node1 'kube
   - `critical` 在 `strict` 和 `relaxed` 下都拒绝。
   - `high` 在 `strict` 下拒绝，在 `relaxed` 下弹出审批。
   - `medium` 在 `strict` 下弹出审批，在 `relaxed` 下放行。
-- 有三种匹配方式：
-  - `command` 加 `subcommands`、`flags`
-  - `pattern` 正则
-  - `http`，可包含 `methods`、`urlPatterns`、`bodyPatterns`
-
-  `scope` 可以把规则限定在 `local` 或 `remote`。详细语义见设计文档 [4.1](docs/opencode-safety-policy-design.md#41-声明式规则格式人工扩展极简)。
 - 规则作用于拆壳后的每条原子命令，本机和远端都适用。
-- `extraAllow` 可以豁免 `high`、`medium` 规则，但不能豁免 `critical`、`extraDeny` 和自保护。
-- 字段非法、正则无法编译或 `id` 重复时，规则文件加载失败，按上文的 `config-error` 处理。
-- 外挂规则中的 `examples` 只校验格式，不会自动运行。改完规则后，用 `/safety test <命令>` 或 `cli.ts --options` 确认判定结果。内置规则在 `rules/` 下，它们的 `examples` 由 `bun test` 逐条验证。
+- 外挂规则中的 `examples` 只校验格式，不会自动运行。改完规则后，用 `/safety test <命令>` 确认判定结果。
+
+每个字段的含义和写法、内联规则、拦截 MCP 工具、排错方法，见[自定义规则指南](docs/opencode-safety-policy-custom-rules.md)。
+
+要为所有用户新增内置规则，见[内置规则开发指南](docs/opencode-safety-policy-builtin-rules.md)。
 
 ## 安全边界
 
@@ -244,6 +240,7 @@ bun run test:system   # 需要 docker 和本机的 opencode，在一次性容器
 ```
 
 - [开发执行流程](docs/opencode-safety-policy-dev-plan.md)
+- [内置规则开发指南](docs/opencode-safety-policy-builtin-rules.md)：新增或修改 `rules/` 下的内置规则
 - [手工试用指南](docs/opencode-safety-policy-manual-test.md)：用真实模型试用
 
 发布流程：
