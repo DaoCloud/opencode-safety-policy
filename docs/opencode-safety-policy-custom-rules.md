@@ -45,7 +45,7 @@
 
 文件的顶层是一个对象，`rules` 数组中的每个元素是一条规则。各字段的含义见[第 4 节](#4-字段说明)。
 
-**第 2 步：在插件配置中引用它。** 编辑 `~/.config/opencode/opencode.json`，给插件条目加上 `options`：
+**第 2 步：在插件配置中引用它。** 编辑注册插件的配置文件，用户级是 `~/.config/opencode/opencode.json`，项目级是项目中的 `opencode.json` 或 `.opencode/opencode.json`，见 README 的[安装](../README.md#安装)。给插件条目加上 `options`：
 
 ```json
 {
@@ -60,8 +60,8 @@
 
 - `rulesFile` 是数组，可以列出多个文件。
 - 必须写绝对路径。插件不展开 `~` 和 `$HOME`，写成 `~/.config/...` 会报配置错误。
-- 离线安装时 `package` 是 `./safety-policy`，`options` 的写法相同。
-- 系统级部署时，`options` 写在 `/etc/opencode/opencode.json` 中，规则文件也放在 `/etc/opencode/` 下，由管理员维护。
+- 离线安装时 `package` 是插件目录的路径，`options` 的写法相同。
+- 系统级部署（见设计文档 [8](opencode-safety-policy-design.md#8-分发与部署方案适配-infra-integrate-场景) 的第 2 点）时，`options` 写在 `/etc/opencode/opencode.json` 中，规则文件也放在 `/etc/opencode/` 下，由管理员维护。
 
 **第 3 步：确认生效。** 不用重启 OpenCode，在 TUI 中输入：
 
