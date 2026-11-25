@@ -2,6 +2,7 @@
   "name": "@daocloud/opencode-safety-policy",
   "version": "0.1.1",
   "description": "Safety policy plugin for OpenCode to guard local and remote SSH destructive commands",
+  "license": "Apache-2.0",
   "type": "module",
   "exports": {
     ".": "./index.ts",

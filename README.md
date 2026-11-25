@@ -281,3 +281,7 @@ bun run test:system   # 需要 docker 和本机的 opencode，在一次性容器
 1. 修改 `package.json` 中的 `version`，合入 `main`。
 2. 确认 `main` 上的 CI 通过后，推送同名 tag，例如 `git tag v0.1.0 && git push origin v0.1.0`。tag 推送后，在线安装的用户就能升级到它，不会等 `release.yml` 跑完。
 3. `release.yml` 跑完全部测试后，把 tgz 和 `SHA256SUMS` 附到 GitHub Release。
+
+## 许可证
+
+[Apache-2.0](LICENSE)
