@@ -20,7 +20,8 @@ export class Tui {
   constructor(h: Harness, env: Record<string, string> = {}, server = ["--standalone"]) {
     this.proc = Bun.spawn(["opencode", ...server, h.project], {
       cwd: h.project,
-      env: h.env({ TERM: "xterm-256color", ...env }),
+      // A TUI started after another one has saved prompts would open "What's new" over the home screen.
+      env: h.env({ TERM: "xterm-256color", OPENCODE_CLI_CONFIG_CONTENT: '{"highlights":false}', ...env }),
       terminal: { cols: COLS, rows: ROWS, data: (_terminal, data) => this.term.write(data) },
     })
     // Answer terminal queries the way a real terminal would.
