@@ -249,3 +249,31 @@ describe("server api", () => {
     expect(listeningPorts()).not.toContain(server.port!)
   })
 })
+
+describe("nested opencode", () => {
+  test.each([
+    ["opencode run --auto 'fix it'", "--auto"],
+    ["opencode --yolo", "--yolo"],
+    ["opencode run --dangerously-skip-permissions x", "--dangerously-skip-permissions"],
+    ["OPENCODE_SAFETY_LOCK_MODE=off opencode run x", "OPENCODE_SAFETY_LOCK_MODE=off"],
+    ["env XDG_CONFIG_HOME=/tmp/c opencode run x", "XDG_CONFIG_HOME=/tmp/c"],
+    ["HOME=/tmp/h opencode", "HOME=/tmp/h"],
+    ["OPENCODE_DB=/tmp/x.db opencode run x", "OPENCODE_DB=/tmp/x.db"],
+    ["sudo OPENCODE_CONFIG_CONTENT='{}' opencode run x", "OPENCODE_CONFIG_CONTENT={}"],
+    ["echo $(opencode run --auto x)", "--auto"],
+    ["script -qc 'opencode run --auto x' /dev/null", "--auto"],
+  ])("%s is denied", (command, target) => {
+    expect(run(command)).toMatchObject({ decision: "deny", ruleId: "self-protect", reason: expect.stringContaining(`（${target}）`) })
+  })
+
+  test.each(["opencode run 'drop the --auto flag'", "opencode --version", "FOO=1 opencode run x", "ssh h opencode run --auto x"])(
+    "%s is not self-protection",
+    (command) => {
+      expect(run(command).ruleId).not.toBe("self-protect")
+    },
+  )
+
+  test("applies in off mode", () => {
+    expect(run("opencode run --auto x", "off").ruleId).toBe("self-protect")
+  })
+})

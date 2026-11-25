@@ -134,6 +134,18 @@ describe.skipIf(!E2E_ENABLED)("self-protection", () => {
     expectDenied(await h.shell("echo {} > opencode.json"), "self-protect")
     expect(readFileSync(file, "utf8")).toBe(before)
   })
+
+  test("a nested opencode run loads the plugin and auto-rejects its asks, and --auto is denied", async () => {
+    const inner = directive("shell", { command: `rm ${h.write("tmp/nested.txt", "x")}` })
+    const nested = await h.shell(`opencode run --standalone '${inner}'`)
+    // The nested run's model turns go through the same mock: its call and its reply.
+    h.expectedTurns += 2
+    expect(nested.permissions).toEqual([])
+    expect(nested.result).toContain("permission requested: shell")
+    expect(nested.result).toContain("auto-rejecting")
+    expect(nested.result).not.toContain(STUB_MARK)
+    expectDenied(await h.shell(`opencode run --standalone --auto '${inner}'`), "self-protect")
+  })
 })
 
 describe.skipIf(!E2E_ENABLED)("server credentials and api", () => {

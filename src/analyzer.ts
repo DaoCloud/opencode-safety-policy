@@ -35,6 +35,8 @@ import { effectiveCwd, expandPathArgs, resolveCanonicalPath } from "./path-util"
 import { ALLOW, combine, decide, type RuleSet, type Verdict } from "./rules"
 import type { MatchInput } from "./rules/matcher"
 import {
+  nestedOpencode,
+  nestedOpencodeVerdict,
   protectedTarget,
   secretTarget,
   secretVerdict,
@@ -452,12 +454,14 @@ export function readScriptFile(file: string): string {
   }
 }
 
-/** Self-protection (design 4.2). Atoms found by the prescan are only checked for the local Server API. */
+/** Self-protection (design 4.2). Atoms found by the prescan are only checked for the local Server API and `opencode`. */
 function selfProtect({ atom, candidates, dirs }: Entry, input: AnalyzeInput, home: string): Verdict | undefined {
   const { protect } = input
   if (!protect) return undefined
   const api = atom.isRemote ? undefined : serverApiRequest(candidates.flatMap((c) => c.input.http ?? []), protect.ports)
   if (api) return serverApiVerdict(api)
+  const nested = nestedOpencode(atom)
+  if (nested !== undefined) return nestedOpencodeVerdict(nested)
   if (atom.prescan) return undefined
   for (const dir of dirs) {
     const secret = secretTarget(atom, dir, protect, home)

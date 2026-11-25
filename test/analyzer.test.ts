@@ -103,6 +103,13 @@ describe("wrappers and stdin", () => {
     "nsenter -t 1 -m rm -rf etc",
     "unshare -R /mnt rm -rf etc",
     "systemd-run rm -rf etc",
+    "busybox rm -rf /etc",
+    "kubectl exec pod -- toybox rm -rf /",
+    "script -qc 'rm -rf /etc' /dev/null",
+    "tmux new -d 'rm -rf /etc'",
+    "screen -dmS x rm -rf /etc",
+    "taskset -c 0 chrt -f 10 rm -rf /etc",
+    "echo 'rm -rf /etc' | at now",
     "ip netns exec ns1 rm -rf /etc",
     "kubectl debug node/n1 -it --image=busybox -- chroot /host rm -rf /etc",
     "flock /tmp/l -c 'rm -rf /'",
@@ -572,6 +579,8 @@ describe("remote commands", () => {
     "nerdctl exec c1 ls /data",
     "crictl exec -it c1 ls /data",
     "ssh node1 'echo $HOSTNAME; uptime'",
+    "ssh node1 script -qc ls /dev/null",
+    "ssh node1 strace -f -o /dev/null ls",
   ])("read-only %s is allowed", (command) => {
     expect(verdict(command)).toEqual(["allow", undefined])
   })
@@ -582,6 +591,10 @@ describe("remote commands", () => {
     "ssh node1 docker run ps",
     "ssh node1 '> /tmp/x'",
     "ssh node1 <<'EOF'\n/opt/ops/reset.sh\nEOF",
+    // The launcher writes its log over the file.
+    "ssh node1 script -qc ls /etc/kubernetes/admin.conf",
+    "ssh node1 strace -o /etc/kubernetes/admin.conf ls",
+    "ssh node1 screen -L -Logfile /etc/kubernetes/admin.conf -dm ls",
   ])("unknown %s asks in strict and is allowed in relaxed", (command) => {
     expect(verdict(command)).toEqual(["ask", "unknown-remote-command"])
     expect(verdict(command, { mode: "relaxed" })).toEqual(["allow", undefined])

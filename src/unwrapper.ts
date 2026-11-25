@@ -537,9 +537,20 @@ function commandFrom(label: string, args: string[], expanded: boolean[], start: 
   return [{ label, inner: { argv: args.slice(i), expanded: expanded.slice(i) } }]
 }
 
-/** Skips the options of `spec` and unwraps the rest. `skip` rejects options after which no command runs. */
-function optionsThen(label: string, spec: OptionSpec, skip?: (option: ParsedOption, arg: string) => boolean): Unwrapper {
+/**
+ * Skips the options of `spec` and unwraps the rest. `skip` rejects options after which no command runs,
+ * `operand` accepts a first positional that comes before the command, and `keep` marks options that make the
+ * wrapper write a file itself, so that it is judged too.
+ */
+function optionsThen(
+  label: string,
+  spec: OptionSpec,
+  skip?: (option: ParsedOption, arg: string) => boolean,
+  operand?: (arg: string) => boolean,
+  keep?: (arg: string) => boolean,
+): Unwrapper {
   return (args, expanded) => {
+    let writes = false
     let i = 0
     while (i < args.length) {
       if (args[i] === "--") {
@@ -549,10 +560,12 @@ function optionsThen(label: string, spec: OptionSpec, skip?: (option: ParsedOpti
       const option = readOption(args, i, spec)
       if (!option) break
       if (skip?.(option, args[i]!)) return []
+      if (keep?.(args[i]!)) writes = true
       i = option.next
     }
+    if (i < args.length && operand?.(args[i]!)) i++
     if (i >= args.length) return []
-    return [{ label, inner: { argv: args.slice(i), expanded: expanded.slice(i) } }]
+    return [{ label, inner: { argv: args.slice(i), expanded: expanded.slice(i) }, ...(writes && { keep: true }) }]
   }
 }
 
@@ -1347,6 +1360,150 @@ function watch(args: string[], expanded: boolean[]): Layer[] {
   return [{ label: "watch", inner: { script: args.slice(i).join(" ") } }]
 }
 
+const SCRIPT_LOGS = /^(-[BIOTt]|--(log-io|log-in|log-out|log-timing|timing))$/
+
+/**
+ * `script` runs `-c` or the joined command after `--` with a shell, and an interactive shell on stdin without one.
+ * BSD `script file command...` runs the command itself; util-linux rejects a second positional. The session is
+ * logged to `./typescript` unless a log file is given, so `script` is judged too unless every log is `/dev/null`.
+ */
+function script(args: string[], expanded: boolean[], stdin?: string, piped?: Piped): Layer[] {
+  const logs: string[] = []
+  let command: string | undefined
+  let file: string | undefined
+  let i = 0
+  while (i < args.length && args[i] !== "--") {
+    const option = readOption(args, i, OPTION_SPECS.script)
+    if (!option && file !== undefined) break
+    if (!option) {
+      file = args[i++]
+      continue
+    }
+    if (option.name === "-c" || option.name === "--command") command = option.value
+    else if (SCRIPT_LOGS.test(option.name) && option.value !== undefined) logs.push(option.value)
+    i = option.next
+  }
+  if (file !== undefined) logs.push(file)
+  const keep = !logs.length || logs.some((log) => log !== "/dev/null")
+  const layers: Layer[] =
+    command !== undefined
+      ? [{ label: "script -c", inner: { script: command } }]
+      : i < args.length && args[i] !== "--"
+        ? [{ label: "script", inner: { argv: args.slice(i), expanded: expanded.slice(i) } }]
+        : i + 1 < args.length
+          ? [{ label: "script", inner: { script: args.slice(i + 1).join(" ") } }]
+          : stdinLayers("script", stdin, piped)
+  return keep ? layers.map((layer) => ({ ...layer, keep: true })) : layers
+}
+
+/**
+ * `strace [options] command...`; `-o |command` (or `!command`) also pipes the trace to a shell command, and `strace`
+ * is judged too when `-o` writes a file.
+ */
+function strace(args: string[], expanded: boolean[]): Layer[] {
+  const layers: Layer[] = []
+  let keep = false
+  let i = 0
+  while (i < args.length) {
+    if (args[i] === "--") {
+      i++
+      break
+    }
+    const option = readOption(args, i, OPTION_SPECS.strace)
+    if (!option) break
+    const value = option.value ?? ""
+    if (option.name === "-o" || option.name === "--output") {
+      if (/^[|!]/.test(value)) layers.push({ label: "strace -o", inner: { script: value.slice(1) } })
+      else if (value !== "/dev/null") keep = true
+    }
+    i = option.next
+  }
+  if (i < args.length) layers.push({ label: "strace", inner: { argv: args.slice(i), expanded: expanded.slice(i) } })
+  return keep ? layers.map((layer) => ({ ...layer, keep: true })) : layers
+}
+
+// tmux commands that run a shell command, with their alias and the flags that take a value. The spawning ones run
+// several arguments as argv and one with the shell; the others run their first argument with the shell.
+const TMUX_COMMANDS = (
+  [
+    ["new-session", "new", "ceFfnstxy", true],
+    ["new-window", "neww", "ceFnt", true],
+    ["new-pane", "newp", "BceFlmpRsStTxXyY", true],
+    ["split-window", "splitw", "BceFlmpRsStT", true],
+    ["respawn-pane", "respawnp", "cet", true],
+    ["respawn-window", "respawnw", "cet", true],
+    ["display-popup", "popup", "bcdehsStTwxy", true],
+    ["run-shell", "run", "cdst", false],
+    ["if-shell", "if", "t", false],
+    ["pipe-pane", "pipep", "t", false],
+  ] as const
+).map(([name, alias, values, spawn]) => ({ name, alias, spec: { shortValue: values, longValue: new Set<string>() }, spawn }))
+
+/**
+ * `tmux [options] [command [flags] [arguments] [;] ...]`. tmux takes an alias or a unique prefix of a command name;
+ * a prefix that also fits a command not listed here is ambiguous, which tmux rejects. Aliases come first, and
+ * `display` is the alias of display-message.
+ */
+function tmux(args: string[], expanded: boolean[]): Layer[] {
+  let i = 0
+  while (i < args.length && args[i] !== "--") {
+    const option = readOption(args, i, OPTION_SPECS.tmux)
+    if (!option) break
+    if (option.name === "-c") return option.value === undefined ? [] : [{ label: "tmux -c", inner: { script: option.value } }]
+    i = option.next
+  }
+  if (args[i] === "--") i++
+  const layers: Layer[] = []
+  let argv: string[] = []
+  let flags: boolean[] = []
+  // An argument ending in an unescaped `;` ends a command.
+  for (; i <= args.length; i++) {
+    const arg = args[i]
+    const end = arg === undefined || (arg.endsWith(";") && !arg.endsWith("\\;"))
+    if (arg !== undefined && arg !== ";") {
+      argv.push(end ? arg.slice(0, -1) : arg.replace(/\\;$/, ";"))
+      flags.push(expanded[i]!)
+    }
+    if (!end) continue
+    layers.push(...tmuxCommand(argv, flags))
+    argv = []
+    flags = []
+  }
+  return layers
+}
+
+function tmuxCommand(args: string[], expanded: boolean[]): Layer[] {
+  const name = args[0] ?? ""
+  const command =
+    TMUX_COMMANDS.find((entry) => entry.alias === name || entry.name === name) ??
+    TMUX_COMMANDS.find((entry) => name && name !== "display" && entry.name.startsWith(name))
+  if (!command) return []
+  const i = skipOptions(args, 1, command.spec)
+  if (i >= args.length) return []
+  const label = `tmux ${command.name}`
+  if (command.spawn && args.length - i > 1) return [{ label, inner: { argv: args.slice(i), expanded: expanded.slice(i) } }]
+  return [{ label, inner: { script: args[i]! } }]
+}
+
+/** `at` / `batch` queue a job from `-f file` or stdin; `-l`, `-r`, `-d` and `-c` only manage queued jobs. */
+function at(name: string): Unwrapper {
+  return (args, _, stdin, piped) => {
+    let file: string | undefined
+    for (let i = 0; i < args.length && args[i] !== "--"; ) {
+      const option = readOption(args, i, OPTION_SPECS.at)
+      if (!option) {
+        i++
+        continue
+      }
+      if (/[lrdc]/.test(shortFlags(args[i]!, OPTION_SPECS.at))) return []
+      if (option.name === "-f") file = option.value
+      i = option.next
+    }
+    if (file !== undefined) return [argumentLayer(name, file, undefined)]
+    return stdinLayers(name, stdin, piped)
+  }
+}
+
 // The default replacement strings of `parallel` besides `{}`, with the part of the input each stands for.
 const REPLACEMENTS: [string, string][] = [
   ["{//}", "//"],
@@ -1791,9 +1948,41 @@ const WRAPPERS: Record<string, Unwrapper> = {
   unshare,
   ip,
   setpriv: optionsThen("setpriv", OPTION_SPECS.setpriv),
+  // Multi-call binaries run the applet named first; their own options (`--list`, `--install`, `--help`) run none.
+  busybox: optionsThen("busybox", OPTION_SPECS.nohup, () => true),
+  toybox: optionsThen("toybox", OPTION_SPECS.nohup, () => true),
   "systemd-run": systemdRun,
   flock,
   watch,
+  // Launchers. `taskset -p`, `chrt -p` and `chrt -m` act on running processes or print limits; a mask or a numeric
+  // priority comes before the command.
+  taskset: optionsThen(
+    "taskset",
+    OPTION_SPECS.taskset,
+    (option, arg) => option.name === "--pid" || shortFlags(arg, OPTION_SPECS.taskset).includes("p"),
+    () => true,
+  ),
+  chrt: optionsThen(
+    "chrt",
+    OPTION_SPECS.chrt,
+    (option, arg) => /^--(pid|max)$/.test(option.name) || /[pm]/.test(shortFlags(arg, OPTION_SPECS.chrt)),
+    (arg) => /^\d+$/.test(arg),
+  ),
+  numactl: optionsThen("numactl", OPTION_SPECS.numactl),
+  // `screen -ls`, `-wipe`, `-r`, `-x`, `-X`, `-Q` and `-v` attach, query or send to sessions instead. `-L` (also in
+  // `-Logfile`) logs the window to a file.
+  screen: optionsThen(
+    "screen",
+    OPTION_SPECS.screen,
+    (_, arg) => /^-(ls|list|wipe)$/.test(arg) || /[rxXQv]/.test(shortFlags(arg, OPTION_SPECS.screen)),
+    undefined,
+    (arg) => shortFlags(arg, OPTION_SPECS.screen).includes("L"),
+  ),
+  script,
+  strace,
+  tmux,
+  at: at("at"),
+  batch: at("batch"),
   parallel,
   source: source("source"),
   ".": source("."),

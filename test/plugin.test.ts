@@ -253,6 +253,15 @@ describe("evaluate", () => {
     expect((await s.evaluate(request)).effect).toBe("allow")
   })
 
+  test("still forces the prompt after a long external_directory approval", async () => {
+    const s = await setup()
+    const event = call("shell", { command: "kubectl delete deploy web" })
+    await s.before(event)
+    s.clock.t += 2 * 60 * 60_000
+    const request = { action: "shell", resources: ["kubectl delete deploy web"], source: source(event.id) }
+    expect(await s.evaluate(request)).toMatchObject({ effect: "ask", message: expect.stringMatching(/^\[safety-policy:k8s-delete\] /) })
+  })
+
   test("denies a shell command that execute.before did not check", async () => {
     const s = await setup()
     const ls = call("shell", { command: "ls" })

@@ -180,6 +180,15 @@ const WGET_FLAG = `adjust-extension ask-password auth-no-challenge background ba
   random-wait recursive relative retr-symlinks retry-connrefused retry-on-host-error save-headers server-response
   show-progress span-hosts spider strict-comments timestamping trust-server-names unlink verbose version warc-cdx
   xattr`.split(/\s+/)
+const STRACE_VALUE = `columns detach-on env interruptible stack-trace-frame-limit syscall-limit output
+  summary-syscall-overhead attach trace-path string-limit summary-sort-by user summary-columns const-print-style argv0
+  color trace trace-fds abbrev verbose raw signals status read write fault inject kvm decode-pids`.split(/\s+/)
+// Options with an optional value take it only after `=`.
+const STRACE_FLAG = `output-append-mode summary-only summary debug follow-forks output-separately instruction-pointer
+  kill-on-exit syscall-number arg-names no-abbrev summary-wall-clock pidns-translation successful-only failed-only
+  failing-only seccomp-bpf always-show-pid daemonize daemonised daemonized stack-trace stack-traces
+  relative-timestamps absolute-timestamps timestamps syscall-times strings-in-hex tips hyperlink namespace quiet
+  silent silence decode-fds secontext help version`.split(/\s+/)
 const HTTPIE_VALUE = `boundary raw pretty style response-charset response-mime format-options print output session
   session-read-only auth auth-type proxy max-redirects max-headers timeout verify ssl ciphers cert cert-key
   cert-key-pass default-scheme history-print`.split(/\s+/)
@@ -668,6 +677,73 @@ export const OPTION_SPECS = {
       ...GNU,
     ],
   }),
+  taskset: spec("", [], { flags: ["all-tasks", "pid", "cpu-list", ...GNU] }),
+  chrt: spec("DPTUX", ["sched-runtime", "sched-period", "sched-deadline", "clamp-min", "clamp-max"], {
+    flags: [
+      "all-tasks",
+      "batch",
+      "deadline",
+      "deadline-overrun",
+      "ext",
+      "fifo",
+      "idle",
+      "pid",
+      "max",
+      "other",
+      "rr",
+      "reset-on-fork",
+      "reclaim-grub",
+      "verbose",
+      ...GNU,
+    ],
+  }),
+  numactl: spec(
+    "iwpPcNCmSfoLMI",
+    [
+      "interleave",
+      "weighted-interleave",
+      "preferred",
+      "preferred-many",
+      "cpubind",
+      "cpunodebind",
+      "physcpubind",
+      "membind",
+      "shm",
+      "file",
+      "offset",
+      "length",
+      "shmmode",
+      "shmid",
+    ],
+    {
+      flags: [
+        "all",
+        "show",
+        "localalloc",
+        "balancing",
+        "hardware",
+        "strict",
+        "dump",
+        "dump-nodes",
+        "huge",
+        "touch",
+        "cpu-compress",
+        "verify",
+        "version",
+      ],
+    },
+  ),
+  // util-linux `-t[file]` takes only an attached value; BSD `-t time` takes a number.
+  script: spec(
+    "BcEIOTmo",
+    ["log-io", "command", "echo", "log-in", "log-out", "log-timing", "logging-format", "output-limit"],
+    { optional: { "-t": NUMBER }, flags: ["append", "return", "flush", "force", "quiet", "timing", ...GNU] },
+  ),
+  strace: spec("abeEIoOpPsSuUX", STRACE_VALUE, { flags: STRACE_FLAG }),
+  tmux: spec("cfLST"),
+  // `-Logfile file` parses as a cluster ending in the value letter `e`.
+  screen: spec("cehpsStT"),
+  at: spec("qfut"),
   parallel: spec("aBCdDEHIjJLnNPsSUW", PARALLEL_VALUE, {
     optional: {
       "-i": NOT_OPTION,
