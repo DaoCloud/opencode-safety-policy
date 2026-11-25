@@ -334,7 +334,7 @@
 - 支持 `command + subcommands + flags` 结构化匹配（先对命令名执行 `basename`/去反斜杠归一化，再按对应 CLI 的带值选项表跳过如 `kubectl --kubeconfig /path -n prod --as admin` 等前置参数），也支持 `pattern` 正则匹配与 `http`（`methods` + `urlPatterns` + `bodyPatterns`）匹配。
 - 每条规则带 `severity`（`"critical" | "high" | "medium"`），分别控制在不同模式下的默认处置（`critical`/`high` 在 `strict` 下默认 `deny`，`medium` 在 `strict` 下默认 `ask`，避免高误报倒逼用户关闭插件）。
 - 每条规则自带 `examples.match` / `examples.ignore`，单元测试自动遍历全量 JSON 规则执行回归验证，人工加完规则跑一次 `bun test` 即可确认无误报、无漏报。
-- 规则文件格式为 `{ "rules": [ <规则>, ... ] }`。扫描内置目录时，没有 `rules` 字段的文件（如 `ssh-readonly.json`）会被跳过。规则含未知字段、非法 `severity`、无法编译的正则或重复 `id` 时，加载直接报错，并指明来源文件和 `id`。
+- 规则文件格式为 `{ "description": "<适用对象>", "rules": [ <规则>, ... ] }`。`description` 说明文件适用的对象，插件不读取，内置规则文件必须把它写在第一个字段。扫描内置目录时，没有 `rules` 字段的文件（如 `ssh-readonly.json`）会被跳过。规则含未知字段、非法 `severity`、无法编译的正则或重复 `id` 时，加载直接报错，并指明来源文件和 `id`。
 - 匹配语义（同一条规则的各部分须同时满足）：
   - `command` 可以是字符串或数组，与归一化后的命令名比较。
   - `subcommands` 中任一项命中即可，多词项（如 `"delete namespace"`）的后续词按顺序出现即可，不要求相邻。对有带值选项表的 CLI（`kubectl`、`docker`、`iptables` 系列），首词必须是第一个位置参数。其他 CLI 的首词可以出现在任意位置参数上，避免未知的带值选项（如 `helm -n prod uninstall`）遮住子命令。
@@ -380,7 +380,7 @@
 - **Linux / K8s / 容器只读**：`cd`、`pwd`、`echo`、`ls`、`cat`、`head`、`tail`、`grep`、`rg`、`df`、`du`、`free`、`uptime`、`uname`、`hostname`、`whoami`、`id`、`ps`、`ss`、`ip addr/route/link show`、`systemctl status`、`journalctl`、`dmesg`、`kubectl get/describe/logs/top/cluster-info`、`docker ps/images/logs/inspect`、`crictl ps/pods/logs/inspect`。
 - **Spectrum / Cumulus / IB / GPU / UFM 只读**：`nv show`、`net show`、`nvidia-smi`（不含 `--gpu-reset`/`-r`）、`ibstat`、`ibv_devinfo`、`ibswitches`、`iblinkinfo`、`sminfo`、`mlxlink`、`ipmitool sensor/sdr/fru/sel list/chassis status/power status`，以及发往 Redfish / UFM 的纯 `GET` 查询（远端 `curl`/`wget`/`http` 的每个请求都是已知的 `GET`/`HEAD`、路径都在 `/redfish/` 或 `/ufmRest*/` 下，且不带 `-o`、`--cookie-jar`、`-O`、`--download` 等写本地文件的选项）。
   > 注：`ibdiagnet` 会向 `/var/tmp/ibdiagnet2` 写入大量诊断产物并执行全网扫描，**不放入**无条件只读白名单（默认在 `strict` 下走 `ask`，有需要可在 `sshReadOnlyAllowlist` 中按需显式加入）。
-- 文件格式为 `{ "commands": [ "<命令名> [子命令...]", ... ] }`，条目与 `sshReadOnlyAllowlist` 相同，是命令前缀，例如 `"kubectl get"`、`"ipmitool sel list"`、`"mlxlink"`。
+- 文件格式为 `{ "description": "<说明>", "commands": [ "<命令名> [子命令...]", ... ] }`，条目与 `sshReadOnlyAllowlist` 相同，是命令前缀，例如 `"kubectl get"`、`"ipmitool sel list"`、`"mlxlink"`。
 - 前缀从第一个位置参数开始逐词比较。`kubectl`、`docker`、`ipmitool` 会先跳过全局选项（`kubectl -n prod get pods`、`ipmitool -I lanplus -H bmc sel list`），其他命令的带值选项会被当作位置参数，因此不会命中多词条目。
 - 带输出重定向写文件的命令不算只读。`/dev/null`、`/dev/stdout`、`/dev/stderr` 与 `2>&1` 这类 fd 复制不算写文件。
 - 白名单只影响"未知远端命令"的默认 `ask`，不覆盖规则。远端命令命中任何规则时按规则判定，例如 `nvidia-smi -r` 命中 `nvidia-smi-reset`，`mlxlink -a DN` 命中 `mlxlink-write`。

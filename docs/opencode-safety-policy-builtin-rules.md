@@ -44,9 +44,12 @@
 
 ```json
 {
+  "description": "适用对象：存储系统。覆盖 ……",
   "rules": []
 }
 ```
+
+`description` 必须是文件的第一个字段，写明这个文件适用于哪类目标、覆盖哪些命令或工具，测试会检查它。插件不读取 `description`。
 
 新建文件后要更新设计文档 4.2 和 6，以及 README 开头的覆盖范围列表和“内置规则”一节的文件表，见 [3.7](#37-同步文档)。
 
@@ -177,12 +180,13 @@ cd /tmp && bun /path/to/opencode-safety-policy/cli.ts test "kubectl -n prod dele
 
 ```json
 {
+  "description": "远端只读命令白名单，不是拦截规则……",
   "commands": ["ls", "kubectl get", "ipmitool sel list"]
 }
 ```
 
 - 条目的语义与用户的 `sshReadOnlyAllowlist` 相同，见自定义规则指南的[第 7 节](opencode-safety-policy-custom-rules.md#7-远端只读白名单)。
-- 测试要求：文件只有 `commands` 一个字段，条目不重复，每个条目是用单个空格分隔的词，首尾没有空格。
+- 测试要求：文件只有 `description` 和 `commands` 两个字段，条目不重复，每个条目是用单个空格分隔的词，首尾没有空格。
 - 只收录确实只读的命令：不改变系统状态，不写文件。`ibdiagnet` 会写诊断文件并扫描整个 fabric，所以没有收录。
 - 白名单不会放行命中规则的命令。只读命令的个别危险选项另写规则拦截，如 `nvidia-smi -r` 由 `nvidia-smi-reset` 拦截。
 - 白名单还决定本机命令能否读取插件配置等受保护的文件，加条目时一并考虑。

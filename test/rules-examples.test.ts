@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { readdirSync } from "node:fs"
 import path from "node:path"
 import { analyze } from "../src/analyzer"
 import { buildRuleSet } from "../src/rules"
@@ -126,9 +127,18 @@ describe("built-in rules", () => {
   })
 })
 
+test.each(readdirSync(BUILTIN_RULES_DIR).filter((name) => name.endsWith(".json")))(
+  "%s starts with a description",
+  async (name) => {
+    const data = await Bun.file(path.join(BUILTIN_RULES_DIR, name)).json()
+    expect(Object.keys(data)[0]).toBe("description")
+    expect(data.description).toMatch(/\S/)
+  },
+)
+
 test("ssh-readonly.json lists unique non-empty command prefixes", async () => {
   const data = await Bun.file(path.join(BUILTIN_RULES_DIR, "ssh-readonly.json")).json()
-  expect(Object.keys(data)).toEqual(["commands"])
+  expect(Object.keys(data)).toEqual(["description", "commands"])
   expect(data.commands.length).toBeGreaterThan(0)
   for (const entry of data.commands) expect(entry).toMatch(/^\S+( \S+)*$/)
   expect(new Set(data.commands).size).toBe(data.commands.length)
