@@ -4,10 +4,13 @@ on:
   pull_request:
   push:
     branches: [main]
-  schedule:
-    - cron: "0 18 * * *"
   workflow_dispatch:
   workflow_call:
+    inputs:
+      opencode-version:
+        description: OpenCode version for the E2E and system deployment tests
+        type: string
+        default: "2.4.1"
 
 permissions:
   contents: read
@@ -31,7 +34,7 @@ jobs:
       - run: bun test
 
   e2e:
-    name: E2E (OpenCode ${{ github.event_name == 'schedule' && 'latest' || '2.4.1' }}, ${{ matrix.os }})
+    name: E2E (OpenCode ${{ inputs.opencode-version || '2.4.1' }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -39,8 +42,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     timeout-minutes: 20
     env:
-      # Nightly runs track the latest OpenCode release; other runs use the version the plugin is verified against.
-      OPENCODE_VERSION: ${{ github.event_name == 'schedule' && 'latest' || '2.4.1' }}
+      # nightly.yml passes the latest OpenCode release. Other runs use the version the plugin is verified against.
+      OPENCODE_VERSION: ${{ inputs.opencode-version || '2.4.1' }}
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
@@ -58,11 +61,11 @@ jobs:
       - run: bun run test:e2e
 
   system:
-    name: System deployment (OpenCode ${{ github.event_name == 'schedule' && 'latest' || '2.4.1' }})
+    name: System deployment (OpenCode ${{ inputs.opencode-version || '2.4.1' }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      OPENCODE_VERSION: ${{ github.event_name == 'schedule' && 'latest' || '2.4.1' }}
+      OPENCODE_VERSION: ${{ inputs.opencode-version || '2.4.1' }}
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2

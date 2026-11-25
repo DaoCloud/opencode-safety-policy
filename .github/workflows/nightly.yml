@@ -1,0 +1,60 @@
+name: Nightly
+
+# Runs the CI suite against the latest OpenCode release to catch upstream changes early, and opens an issue on failure.
+on:
+  schedule:
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Resolve the latest OpenCode
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.latest.outputs.version }}
+    steps:
+      # Resolved once so every job tests the same release.
+      - id: latest
+        run: |
+          version=$(npm view @opencode/cli version)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+    with:
+      opencode-version: ${{ needs.version.outputs.version }}
+
+  report:
+    name: Report failure
+    needs: [version, test]
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      # One open issue per OpenCode version: a repeated failure comments on it instead of opening another.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.version || 'unknown' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          failed=$(gh api --paginate "repos/$GH_REPO/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" \
+            --jq '.jobs[] | select(.conclusion == "failure") | "- [\(.name)](\(.html_url))"')
+          title="Nightly CI failed with OpenCode $VERSION"
+          body=$(printf 'The nightly run against OpenCode %s failed.\n\nRun: %s\n\nFailed jobs:\n%s\n' "$VERSION" "$RUN_URL" "$failed")
+          number=$(gh issue list --state open --limit 200 --json number,title |
+            jq -r --arg title "$title" 'first(.[] | select(.title == $title) | .number) // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
