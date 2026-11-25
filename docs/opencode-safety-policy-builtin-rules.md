@@ -62,20 +62,25 @@
   "id": "k8s-delete-namespace",
   "severity": "critical",
   "reason": "禁止删除 Kubernetes 命名空间",
-  "command": "kubectl",
+  "command": ["kubectl", "oc", "kubecolor"],
   "subcommands": ["delete", "del"],
-  "pattern": "(?<!-n|--namespace) (\\S+,)?(ns|namespaces?)([/,]\\S*)?( |$)",
+  "pattern": "(^| )(delete|del)( -\\S+( [^-\\s]\\S*)?| [^-\\s]\\S*/\\S*)*(?<! -n| --namespace) (\\S+,)?(?i:ns|namespaces?|projects?)([/,]\\S*)?( |$)",
   "examples": {
     "match": [
       "kubectl delete ns prod",
       "kubectl --context prod delete namespace payments",
       "kubectl delete namespaces/payments",
-      "ssh master kubectl delete ns,deploy x"
+      "ssh master kubectl delete ns,deploy x",
+      "kubectl delete Namespace prod",
+      "kubectl delete --wait=false -l team=x ns",
+      "oc delete project payments"
     ],
     "ignore": [
       "kubectl get ns",
       "kubectl delete pod x -n ns",
       "kubectl delete pod x --namespace prod",
+      "kubectl delete pod ns",
+      "kubectl delete -n ns pod x",
       "echo kubectl delete ns prod"
     ]
   }
