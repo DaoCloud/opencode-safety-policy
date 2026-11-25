@@ -23,7 +23,9 @@
 
 ## 安装
 
-要求 OpenCode 2.x 且不低于 2.3.0，CI 使用 2.4.1 测试。下文以 v0.1.1 为例，可用版本见 [Releases](https://github.com/DaoCloud/opencode-safety-policy/releases)。
+要求 OpenCode 2.x 且不低于 2.3.0，CI 使用 2.4.1 测试。支持 Linux 和 macOS，CI 在两个系统上都运行单元测试和 E2E 测试。下面的步骤两个系统通用，有区别的地方分别写明。
+
+下文以 v0.1.1 为例，可用版本见 [Releases](https://github.com/DaoCloud/opencode-safety-policy/releases)。
 
 | 场景 | 方式 |
 |---|---|
@@ -60,10 +62,16 @@ BASE=https://github.com/DaoCloud/opencode-safety-policy/releases/download/v$VERS
 curl -fL -O "$BASE/daocloud-opencode-safety-policy-$VERSION.tgz" -O "$BASE/SHA256SUMS"
 ```
 
-把这两个文件拷到目标机器，校验后解压。OpenCode 不能直接从 tarball 安装插件，需要先解压成目录：
+把这两个文件拷到目标机器，先校验。两个系统的命令不同：
 
 ```bash
-sha256sum -c SHA256SUMS   # macOS 上用 shasum -a 256 -c SHA256SUMS
+sha256sum -c SHA256SUMS        # Linux
+shasum -a 256 -c SHA256SUMS    # macOS
+```
+
+再解压。OpenCode 不能直接从 tarball 安装插件，需要先解压成目录：
+
+```bash
 mkdir -p ~/.config/opencode/safety-policy
 tar xzf daocloud-opencode-safety-policy-$VERSION.tgz -C ~/.config/opencode/safety-policy --strip-components=1
 ```
@@ -81,16 +89,23 @@ tar xzf daocloud-opencode-safety-policy-$VERSION.tgz -C ~/.config/opencode/safet
 
 ### 系统级部署
 
-跳板机这类多人共用的机器应该强制启用插件。系统级部署时插件文件归 root 所有，项目配置无法卸载它，也无法用同 ID 的插件冒充它。下面以 Linux 为例，这套流程已在一次性容器中验证（见 `test/system/`）。
+跳板机这类多人共用的机器应该强制启用插件。系统级部署时插件文件归 root 所有，项目配置无法卸载它，也无法用同 ID 的插件冒充它。
 
-按[离线安装](#离线安装)下载并校验 tarball，然后解压：
+按[离线安装](#离线安装)下载并校验 tarball。插件要放在 OpenCode 的系统配置目录下，两个系统的目录不同，下文用 `$SYS` 表示。只执行对应系统的那一行：
 
 ```bash
-sudo mkdir -p /etc/opencode/safety-policy
-sudo tar --no-same-owner -xzf daocloud-opencode-safety-policy-$VERSION.tgz -C /etc/opencode/safety-policy --strip-components=1
+SYS=/etc/opencode                              # Linux
+SYS="/Library/Application Support/opencode"    # macOS
 ```
 
-在 `/etc/opencode/opencode.json` 中加入下面的配置。文件已存在时，把这些内容合并进去：
+然后解压。macOS 的路径中有空格，命令中的 `"$SYS"` 不能去掉引号：
+
+```bash
+sudo mkdir -p "$SYS/safety-policy"
+sudo tar --no-same-owner -xzf daocloud-opencode-safety-policy-$VERSION.tgz -C "$SYS/safety-policy" --strip-components=1
+```
+
+在 `$SYS/opencode.json` 中加入下面的配置。文件已存在时，把这些内容合并进去。`resource` 是插件目录的绝对路径，下面是 Linux 的写法，macOS 上要改为 `/Library/Application Support/opencode/safety-policy`：
 
 ```json
 {
@@ -103,34 +118,14 @@ sudo tar --no-same-owner -xzf daocloud-opencode-safety-policy-$VERSION.tgz -C /e
 ```
 
 - `policies` 只允许加载本插件。其他插件都不会加载，项目中伪造的同 ID 插件也一样。如果还要使用其他受信任的插件，在 `policies` 末尾为它追加一条 `allow`。
-- 不要放到会被自动加载的 `/etc/opencode/plugins/` 下，原因同上。
-- 要禁止用户在运行时切换模式，在 `/etc/profile.d/opencode-safety.sh` 中加入 `export OPENCODE_SAFETY_LOCK_MODE=strict`。
-- 升级时先删除 `/etc/opencode/safety-policy`，再解压新版本，然后重启 OpenCode。
+- 不要放到会被自动加载的 `$SYS/plugins/` 下，原因同上。
+- 要禁止用户在运行时切换模式，为所有用户设置环境变量 `OPENCODE_SAFETY_LOCK_MODE=strict`：
+  - Linux：在 `/etc/profile.d/opencode-safety.sh` 中加入 `export OPENCODE_SAFETY_LOCK_MODE=strict`。
+  - macOS：写到 `/etc/zshenv`。zsh 是 macOS 的默认 shell，每次启动都会读取它。用户的 shell 是 bash 时写到 `/etc/profile`。OpenCode Desktop 启动时会从用户的登录 shell 读取环境变量，所以同样生效。
+- macOS 上也可以通过 MDM 下发配置（`ai.opencode.managed.plist`）。这时相对路径以 `/Library/Managed Preferences/` 为基准，`package` 和 `resource` 都要写插件目录的绝对路径。
+- 升级时先删除 `$SYS/safety-policy`，再解压新版本，然后重启 OpenCode。
 
-### macOS
-
-在线安装和离线安装与 Linux 相同，用户目录同样是 `~/.config/opencode/` 和 `~/.cache/opencode/`。
-
-系统级部署的流程也相同，区别如下：
-
-- 系统配置目录是 `/Library/Application Support/opencode/`，把上文的 `/etc/opencode` 都换成它。路径中有空格，命令中要加引号：
-
-  ```bash
-  SYS="/Library/Application Support/opencode"
-  sudo mkdir -p "$SYS/safety-policy"
-  sudo tar --no-same-owner -xzf daocloud-opencode-safety-policy-$VERSION.tgz -C "$SYS/safety-policy" --strip-components=1
-  ```
-
-  `policies` 中的 `resource` 相应改为 `/Library/Application Support/opencode/safety-policy`。
-- `OPENCODE_SAFETY_LOCK_MODE` 写到 `/etc/zshenv`，zsh 是 macOS 的默认 shell，每次启动都会读取它。用户的 shell 是 bash 时写到 `/etc/profile`。OpenCode Desktop 启动时会从用户的登录 shell 读取环境变量，所以同样生效。
-- 通过 MDM 下发配置（`ai.opencode.managed.plist`）时，相对路径以 `/Library/Managed Preferences/` 为基准，`package` 和 `resource` 都要写插件目录的绝对路径。
-
-已知限制：
-
-- 插件探测不到 Server 正在监听的端口（Linux 上读取 `/proc`），所以本机任意端口上的 `/api` 请求都会被拦截，`kubectl proxy`、Prometheus 等其他服务也不例外。
-- 文件系统默认不区分大小写，见[安全边界](#安全边界)。
-
-CI 在 macOS 上运行单元测试和 E2E 测试。系统级部署只在 Linux 容器中验证过。
+Linux 上的这套流程已在一次性容器中验证（见 `test/system/`）。macOS 上的系统级部署还没有在真机上验证。
 
 ### 确认安装
 
@@ -189,38 +184,76 @@ bun ~/.config/opencode/safety-policy/cli.ts test --mode relaxed "ssh node1 'kube
 
 ## 扩展规则
 
-在本机增加规则时，写一个规则文件，把它的绝对路径加入 `rulesFile`。文件格式是 `{ "rules": [...] }`：
+扩展规则有两种场景：
 
-```json
-{
-  "rules": [
-    {
-      "id": "nico-reset",
-      "severity": "high",
-      "command": "nico-cli",
-      "subcommands": ["reset", "wipe"],
-      "reason": "禁止通过 Agent 重置 NICo 节点",
-      "examples": { "match": ["nico-cli reset node-1"], "ignore": ["nico-cli show node-1"] }
-    }
-  ]
-}
-```
+| 场景 | 面向 | 修改什么 | 生效范围 |
+|---|---|---|---|
+| [在本机扩展规则](#在本机扩展规则) | 日常运维 | 插件的 `options` 和自己的规则文件 | 本机，保存后即生效 |
+| [开发内置规则](#开发内置规则) | 插件开发者 | 插件仓库中的 `rules/` | 所有用户，随新版本发布 |
 
-- `severity` 的处置：
-  - `critical` 在 `strict` 和 `relaxed` 下都拒绝。
-  - `high` 在 `strict` 下拒绝，在 `relaxed` 下弹出审批。
-  - `medium` 在 `strict` 下弹出审批，在 `relaxed` 下放行。
-- 规则作用于拆壳后的每条原子命令，本机和远端都适用。
-- 外挂规则中的 `examples` 只校验格式，不会自动运行。改完规则后，用 `/safety test <命令>` 确认判定结果。
+### 在本机扩展规则
+
+插件装好后，只改配置即可，不用修改插件，也不用重新打包。
+
+**新增规则：**
+
+1. 写一个规则文件，例如 `/home/alice/.config/opencode/safety-rules.json`：
+
+   ```json
+   {
+     "rules": [
+       {
+         "id": "team-nico-reset",
+         "severity": "high",
+         "command": "nico-cli",
+         "subcommands": ["reset", "wipe"],
+         "reason": "禁止通过 Agent 重置 NICo 节点",
+         "examples": { "match": ["nico-cli reset node-1"], "ignore": ["nico-cli show node-1"] }
+       }
+     ]
+   }
+   ```
+
+2. 在插件的 `options` 中引用它：`"rulesFile": ["/home/alice/.config/opencode/safety-rules.json"]`。必须写绝对路径，插件不展开 `~`。
+3. 不用重启 OpenCode，在 TUI 中执行 `/safety test nico-cli reset node-1`，结果应为 `deny [team-nico-reset]`。规则文件中的 `examples` 只校验格式，不会自动运行，要这样手动确认。
+
+`severity` 的处置：
+
+- `critical` 在 `strict` 和 `relaxed` 下都拒绝。
+- `high` 在 `strict` 下拒绝，在 `relaxed` 下弹出审批。
+- `medium` 在 `strict` 下弹出审批，在 `relaxed` 下放行。
+
+规则作用于拆壳后的每条原子命令，本机和远端都适用，不用考虑 `ssh`、`sudo` 等写法。
+
+**调整已有的规则：**
+
+- 自己写的规则：直接修改规则文件或 `options`，下一次判定即生效。
+- 内置规则：不要修改插件目录下的 `rules/*.json`，升级时改动会丢失。改为在 `options` 中调整：
+  - `extraAllow` 放行被 `high`、`medium` 内置规则拦下的特定命令，例如只在 `--context dev` 时放行 `kubectl delete`。`critical` 规则不能豁免。
+  - `extraDeny`、`extraAsk` 把某些命令收紧为直接拒绝或弹出审批。
+  - `sshReadOnlyAllowlist` 让 `strict` 下的某些远端只读命令直接放行，不再弹出审批。
+- 内置规则本身有误报或严重程度不合适时，按[开发内置规则](#开发内置规则)修改并发版。
+- 所有规则的 `id` 必须全局唯一，自定义规则不能与内置规则或其他自定义规则重名。
 
 每个字段的含义和写法、内联规则、拦截 MCP 工具、排错方法，见[自定义规则指南](docs/opencode-safety-policy-custom-rules.md)。
 
-要为所有用户新增内置规则，见[内置规则开发指南](docs/opencode-safety-policy-builtin-rules.md)。
+### 开发内置规则
+
+内置规则在插件仓库的 `rules/` 下，随新版本发布，对所有用户生效：
+
+1. 在 `rules/` 下对应类别的 JSON 文件中增加或修改规则，格式与本机的规则文件相同。插件自动加载 `rules/` 下的所有文件，不需要改代码。
+2. `id` 在所有内置规则中全局唯一，已发布的 `id` 不要改名。
+3. 每条规则都要写 `examples`：`match`、`ignore` 各至少 2 条，`ignore` 中至少一条是 `echo ...` 形式。
+4. 运行 `bun test test/rules-examples.test.ts`，逐条验证所有内置规则的 `examples`。
+5. 同步设计文档 [4.2](docs/opencode-safety-policy-design.md#42-规则分类明细)。发版时在 Release 说明中列出新增的规则 `id`，提醒用户检查是否与自定义规则重名。
+
+规则文件的分类、`severity` 的取舍、需要改代码的情况和常见陷阱，见[内置规则开发指南](docs/opencode-safety-policy-builtin-rules.md)。
 
 ## 安全边界
 
 - 插件与 Agent 以同一个 OS 用户运行。它能拦下误操作和常见的绕过写法，但挡不住刻意对抗的 Agent，比如在解释器代码里动态拼接命令。生产环境仍然需要远端最小权限凭据，如 Kubeconfig、BMC、UFM 的只读账号。
 - 模式切换的 RPC 经本机 Server API 暴露。插件拦截了读取 Server 密码和调用 Server API 的常见写法，但不能覆盖所有写法。需要硬保证时，使用 `OPENCODE_SAFETY_LOCK_MODE`。
+- Linux 上插件通过 `/proc` 找到 Server 监听的端口，只拦截发往这些端口的 `/api` 请求。macOS 没有 `/proc`，插件会拦截发往本机任意端口的 `/api` 请求，`kubectl proxy`、Prometheus 等其他服务也不例外。
 - 在线安装和离线安装都是用户级安装，项目配置中的 `"plugins": ["-*"]` 可以卸载它们。如果要打开不可信的仓库，或者需要强制启用插件，请使用系统级部署。
 - 用户在 TUI 中直接输入的 `!命令` 不经过插件。
 - OpenCode 的自动审批会放行 `ask`，但不会放行 `deny`。无人值守时绝不能放行的操作，要配置成 `deny`。

@@ -128,7 +128,7 @@ MCP 工具等非 shell 工具的调用也按一条原子命令处理，见[第 6
 
 规则如下：
 
-- 在所有规则中必须唯一，包括内置规则、所有 `rulesFile` 文件和 `extraDeny`、`extraAsk`、`extraAllow`。重复时整个配置加载失败。
+- 必须全局唯一，不是按文件唯一。插件把内置规则、所有 `rulesFile` 文件中的规则和 `extraDeny`、`extraAsk`、`extraAllow` 合到一起检查：同一个文件内不能重复，两个规则文件之间、规则文件与内联规则之间、自定义规则与内置规则之间也不能重复。重复时整个配置加载失败，报错 `duplicate rule id "<id>"`。
 - 建议用小写字母和连字符，并加上团队或个人前缀，如 `team-`、`alice-`。内置规则用 `k8s-`、`rm-`、`redfish-` 等领域前缀，以后的版本还会增加新的内置规则，自己的前缀可以避免升级后撞名。
 - 不要使用插件内部的 ID：`self-protect`、`config-error`、`policy-error`、`unknown-remote-command`、`opaque`、`dynamic-command`、`protected-endpoint-write`。
 - 查看已有的内置规则 ID：`jq -r '.rules[]?.id' <插件目录>/rules/*.json`，或者看设计文档 [4.2](opencode-safety-policy-design.md#42-规则分类明细)。

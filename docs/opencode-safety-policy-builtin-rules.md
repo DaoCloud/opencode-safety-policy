@@ -83,7 +83,7 @@
 
 | 项目 | 约定 |
 |---|---|
-| `id` | 小写字母加连字符，以领域开头，如 `k8s-`、`helm-`、`ipmitool-`、`redfish-`、`nvue-`、`ufm-`、`rm-`。在所有内置规则中唯一 |
+| `id` | 小写字母加连字符，以领域开头，如 `k8s-`、`helm-`、`ipmitool-`、`redfish-`、`nvue-`、`ufm-`、`rm-`。全局唯一，见下文 |
 | `severity` | 见 [3.3](#33-选择-severity) |
 | `reason` | 一句中文，不加句号。`critical` 和 `high` 以"禁止"开头，`medium` 一般以"需要确认"结尾 |
 | 字段顺序 | `id`、`severity`、`reason`、`command`、`subcommands`、`flags`、`pattern`、`http`、`scope`、`examples` |
@@ -92,6 +92,8 @@
 
 关于 `id`：
 
+- `id` 是全局唯一的，不是按文件唯一。插件把 `rules/` 下所有 JSON 文件的规则合到一起检查，所以同一个文件内不能重复，不同文件之间也不能重复。例如 `linux-host.json` 已有 `mkfs`，`storage.json` 就不能再用 `mkfs`。
+- 内置规则重名时，`bun test` 中的 `built-in rules > load into one rule set with unique ids` 失败。如果带着重名发版，所有用户的插件都会加载失败，拒绝一切工具调用（`config-error`）。
 - `id` 会出现在拒绝信息、审计日志和 `/safety status` 的统计中。已发布的 `id` 不要改名。
 - 用户自定义的规则不能与内置规则重名，否则整个配置加载失败。新版本增加的 `id` 可能与用户已有的 `id` 撞名，发版时要在 Release 说明中列出新增的规则 `id`。
 
