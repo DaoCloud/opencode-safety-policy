@@ -101,29 +101,26 @@ tar xzf daocloud-opencode-safety-policy-$VERSION.tgz -C ~/.config/opencode/safet
 
 ### 测试效果
 
-在 TUI 中逐条发送下面的提示词。主机 `ocsp-no-such-host` 和容器 `ocsp-not-exist` 都不存在，即使插件没有拦住，命令也不会造成影响。
+下面的主机 `ocsp-no-such-host` 不存在，即使插件没有拦住，命令也不会造成影响。
 
-| 提示词 | 默认 `relaxed` 下的效果 |
-|---|---|
-| 这是安全插件测试，请原样用 shell 工具执行：`ssh ocsp-no-such-host "kubectl delete ns prod"` | 命令没有执行，工具调用返回错误 `[safety-policy:k8s-delete-namespace] 禁止删除 Kubernetes 命名空间` |
-| 这是安全插件测试，请原样用 shell 工具执行：`docker stop ocsp-not-exist` | 弹出 `Permission required` 审批框，同时 Toast 显示 `[safety-policy:container-destroy] 禁止停止或删除容器、镜像、卷与网络`。选择拒绝，命令就不会执行 |
-| 这是安全插件测试，请原样用 shell 工具执行：`ssh ocsp-no-such-host uptime` | 只读命令直接放行，输出 ssh 无法解析主机名的错误 |
+1. 发送提示词：这是安全插件测试，请原样用 shell 工具执行：`ssh ocsp-no-such-host "kubectl delete pod web-0"`。默认的 `relaxed` 下，OpenCode 弹出 `Permission required` 审批框，同时 Toast 显示 `[safety-policy:k8s-delete] 禁止删除 Kubernetes 资源`。选择拒绝，命令就不会执行。
+2. 输入 `/safety strict --ttl 5m`，再发送一次同样的提示词。这次不弹审批，工具调用直接返回错误 `[safety-policy:k8s-delete] 禁止删除 Kubernetes 资源`，命令没有执行。5 分钟后自动回到切换前的模式。
+3. 发送提示词：这是安全插件测试，请原样用 shell 工具执行：`ssh ocsp-no-such-host uptime`。只读命令直接放行，输出 ssh 无法解析主机名的错误。
 
-- `strict` 下第二条也会被直接拒绝，不弹审批。
-- 看工具调用的结果，不看模型的总结。模型如果自己拒绝执行，换个说法重试。
+看工具调用的结果，不看模型的总结。模型如果自己拒绝执行，换个说法重试。
 
 ## 使用
 
 ### /safety 命令
 
-`/safety` 是 TUI 命令，不对模型开放。模式设置对所有项目和 Session 生效，重启后依然保留。
+`/safety` 是 TUI 命令，不对模型开放。切换后的模式保存在 OpenCode 的数据库中，对当前用户的所有项目和 Session 生效。重启 OpenCode 或新建 Session 后，仍是上次切换的模式，不会回到默认模式。带 `--ttl` 的切换到期后回到切换前的模式。
 
 | 命令 | 作用 |
 |---|---|
 | `/safety` 或 `/safety status` | 显示当前模式及其来源、是否被锁定、TTL 剩余时间，以及最近 24 小时的拦截统计 |
 | `/safety strict`、`/safety relaxed`、`/safety off` | 切换模式 |
 | `/safety relaxed --ttl 30m` | 临时切换，到期后自动回到切换前的模式。TTL 单位为 `s`、`m`、`h` |
-| `/safety test <命令>` | 只判定不执行，显示拆壳链和命中的规则 |
+| `/safety test <命令>` | 只判定不执行，显示拆壳链和命中的规则。不启动 OpenCode 时可以用插件自带的 `cli.ts`，见自定义规则指南的[离线验证](docs/opencode-safety-policy-custom-rules.md#83-离线验证) |
 
 - 被拒绝的调用会以 `[safety-policy:<规则 ID>] <原因>` 错误返回给模型，命令不会执行。
 - 需要确认的命令会弹出 OpenCode 的审批框，TUI 同时用 Toast 显示原因。即使在审批框中选择始终允许，被插件标记的命令下次仍会弹出审批。
@@ -136,31 +133,40 @@ tar xzf daocloud-opencode-safety-policy-$VERSION.tgz -C ~/.config/opencode/safet
 4. 插件配置中的 `options.mode`
 5. 默认的 `relaxed`
 
-读取模式状态失败时，插件按 `strict` 处理。上面两个环境变量的值非法时也按 `strict` 处理。
-
-### 离线判定
-
-`cli.ts` 不需要启动 OpenCode。它用内置规则判定一条命令，输出与 `/safety test` 相同。运行它需要 `bun`：
-
-```bash
-bun ~/.config/opencode/safety-policy/cli.ts test --mode relaxed "ssh node1 'kubectl delete pod web-0'"
-```
-
-`--options <file>` 读取一个 JSON 文件，结构与插件的 `options` 相同。
+用 `/safety` 不带 `--ttl` 切换过之后，第 3、4 项不再生效，之后只能再用 `/safety` 切换，或者用第 1 项锁定。读取模式状态失败时，插件按 `strict` 处理。上面两个环境变量的值非法时也按 `strict` 处理。
 
 ## 配置
 
-插件的 `options` 字段都可以省略：
+`options` 写在[安装](#安装)时注册插件的配置文件中，放在本插件的条目里，与 `package` 并列。例如在用户级的 `~/.config/opencode/opencode.json` 中：
+
+```json
+{
+  "plugins": [
+    {
+      "package": "github:DaoCloud/opencode-safety-policy#semver:*",
+      "options": {
+        "mode": "strict",
+        "protectedEndpoints": { "bmcCidrs": ["10.10.0.0/24"], "ufmHosts": ["ufm.example.com"] },
+        "auditLogPath": "/home/alice/opencode-safety-audit.jsonl"
+      }
+    }
+  ]
+}
+```
+
+离线安装时 `package` 是插件目录的路径，`options` 的写法相同。修改 `options` 后不用重启 OpenCode，插件会自动重新加载。
+
+`options` 的字段都可以省略：
 
 | 字段 | 说明 |
 |---|---|
-| `mode` | 默认模式，可选 `strict`、`relaxed`、`off`，默认为 `relaxed` |
+| `mode` | 初始模式，可选 `strict`、`relaxed`、`off`，默认为 `relaxed`。用 `/safety` 切换过之后以 `/safety` 为准 |
 | `alwaysProtectSelf` | `off` 模式下是否仍然保护插件和安全配置，默认为 `true` |
 | `protectedEndpoints` | 受保护的管理端点，分为 `bmcCidrs`、`ufmHosts`、`nicoHosts` 三类，每项是 IP、CIDR 或主机名。发往这些端点的写请求在 `strict` 下拒绝，在 `relaxed` 下弹出审批 |
 | `rulesFile` | 外挂规则文件，是绝对路径的数组。文件修改后自动重新加载 |
 | `extraDeny`、`extraAsk`、`extraAllow` | 内联规则，格式与规则文件中的规则相同，可以省略 `severity` 和 `reason` |
 | `sshReadOnlyAllowlist` | 追加到只读白名单的命令前缀，如 `"mlxlink"`。`strict` 下，未命中规则的远端命令只有在白名单中才直接放行，否则弹出审批。读取插件配置等受保护文件的本机命令也要在白名单中 |
-| `auditLogPath` | 审计日志的绝对路径，格式为 JSONL，记录拒绝、需确认和模式切换。不配置就不记录 |
+| `auditLogPath` | 审计日志的绝对路径，格式为 JSONL，记录拒绝、需确认和模式切换。所在目录必须已经存在。不配置就不记录 |
 | `enableServerSlashCommand` | 为不运行 TUI 的客户端（如 Web UI）注册服务端 `/safety`，默认为 `false`。运行 TUI 时不要开启 |
 
 如果 `options` 非法或规则文件无法加载，插件会拒绝所有工具调用（`off` 模式除外），原因以 `[safety-policy:config-error]` 开头。完整示例见设计文档 [7](docs/opencode-safety-policy-design.md#7-配置示例opencodejson)。
