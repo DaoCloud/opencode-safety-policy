@@ -663,6 +663,69 @@ describe("more local wrappers", () => {
   })
 })
 
+describe("namespace and service wrappers", () => {
+  test.each([
+    ["nsenter -t 1 -m -u -i -n -p -- rm x", ["nsenter"]],
+    ["nsenter --target=1 --all rm x", ["nsenter"]],
+    // An optional value is only taken when attached: `-mu` is -m with the value `u`.
+    ["nsenter -t1 -mu rm x", ["nsenter"]],
+    ["nsenter -S 0 -G 0 -n rm x", ["nsenter"]],
+    ["unshare -m --propagation private rm x", ["unshare"]],
+    ["unshare --mount-proc --fork -R /mnt -w /tmp rm x", ["unshare"]],
+    ["setpriv --reuid 0 --regid=0 --init-groups rm x", ["setpriv"]],
+    ["systemd-run --scope -p MemoryMax=1G rm x", ["systemd-run"]],
+    ["systemd-run -u job --uid root -E A=1 -dqt rm x", ["systemd-run"]],
+    ["systemd-run --on-active 30 --work /tmp rm x", ["systemd-run"]],
+    ["systemd-run -M .host rm x", ["systemd-run"]],
+    ["ip netns exec ns1 rm x", ["ip netns exec"]],
+    ["ip -all netns exec rm x", ["ip netns exec"]],
+    // iproute2 matches prefixes: `-n` is -netns, `-r` is -resolve, `net` is netns and `e` is exec.
+    ["ip -n ns0 -r net e ns1 rm x", ["ip netns exec"]],
+    ["ip -4 -rc 1024 -- vrf exec mgmt rm x", ["ip vrf exec"]],
+  ])("%s", (input, wrapperChain) => {
+    expect(only(input)).toMatchObject({ argv: ["rm", "x"], isRemote: false, wrapperChain })
+  })
+
+  test.each([
+    ["nsenter -t 1 -m rm x", ["/"]],
+    ["nsenter -t 1 -a rm x", ["/"]],
+    ["nsenter -t 1 -m -w/tmp rm x", ["/tmp"]],
+    ["nsenter -t 1 -m --wd rm x", [null]],
+    ["nsenter -t 1 -n rm x", undefined],
+    ["unshare -R /mnt rm x", ["/"]],
+    ["unshare -R /mnt --wd=/tmp rm x", ["/tmp"]],
+    ["unshare -m rm x", undefined],
+    ["systemd-run rm x", ["/"]],
+    ["systemd-run --user rm x", [null]],
+    ["systemd-run --working-directory=/tmp rm x", ["/tmp"]],
+    ["systemd-run -p WorkingDirectory=~ rm x", [null]],
+    ["systemd-run --scope rm x", undefined],
+    ["systemd-run -d rm x", undefined],
+  ])("%s changes the directory to %p", (input, chdir) => {
+    expect(atoms(input)[0]?.chdir).toEqual(chdir)
+  })
+
+  test.each([
+    ["systemd-run -H admin@n1 rm x", "n1"],
+    ["systemd-run --machine=root@c1 rm x", "c1"],
+  ])("%s runs on %s", (input, targetHost) => {
+    expect(only(input)).toEqual({ argv: ["rm", "x"], isRemote: true, targetHost, wrapperChain: ["systemd-run"] })
+  })
+
+  test("nsenter, unshare and systemd-run --shell without a command run a shell on stdin", () => {
+    expect(only("nsenter -t 1 -m <<<'rm x'")).toMatchObject({ argv: ["rm", "x"], wrapperChain: ["nsenter -s"] })
+    expect(only("unshare -m <<<'rm x'")).toMatchObject({ argv: ["rm", "x"], wrapperChain: ["unshare -s"] })
+    expect(only("systemd-run -S <<<'rm x'")).toMatchObject({ argv: ["rm", "x"], wrapperChain: ["systemd-run"] })
+  })
+
+  test.each(["setpriv --dump", "systemd-run --user", "nsenter -t 1 -m", "ip netns exec ns1", "ip netns list", "ip ne show"])(
+    "%s is not unwrapped",
+    (input) => {
+      expect(only(input).wrapperChain).toEqual([])
+    },
+  )
+})
+
 describe("long option abbreviations", () => {
   test.each([
     ["sudo --chd / --us root rm x", ["sudo"]],
@@ -998,6 +1061,64 @@ describe("container exec", () => {
       argv: ["rm", "-rf", "/x"],
       wrapperChain: ["kubectl exec", "sh -c"],
     })
+  })
+
+  test.each([
+    ["kubectl debug node/n1 -it --image=busybox -- rm -rf /data", "node/n1", ["kubectl debug"]],
+    ["kubectl debug -it api-0 --image=busybox --target=app -- rm -rf /data", "api-0", ["kubectl debug"]],
+    ["oc debug node/n1 -- rm -rf /data", "node/n1", ["oc debug"]],
+    ["oc -n prod exec api-0 -- rm -rf /data", "api-0", ["oc exec"]],
+    ["kubecolor exec api-0 -- rm -rf /data", "api-0", ["kubecolor exec"]],
+    ["k3s kubectl exec api-0 -- rm -rf /data", "api-0", ["k3s", "kubectl exec"]],
+    ["microk8s kubectl exec api-0 -- rm -rf /data", "api-0", ["microk8s", "kubectl exec"]],
+    ["oc rsh api-0 rm -rf /data", "api-0", ["oc rsh"]],
+    ["oc -n prod rsh -c app --shell /bin/bash api-0 rm -rf /data", "api-0", ["oc rsh"]],
+    ["oc rsh -f pod.yaml rm -rf /data", "pod.yaml", ["oc rsh"]],
+    ["oc --loglevel 5 rsh api-0 rm -rf /data", "api-0", ["oc rsh"]],
+    ["microk8s.kubectl exec api-0 -- rm -rf /data", "api-0", ["microk8s.kubectl", "kubectl exec"]],
+  ])("%s", (input, targetHost, wrapperChain) => {
+    expect(only(input)).toEqual({ argv: ["rm", "-rf", "/data"], isRemote: true, targetHost, wrapperChain })
+  })
+
+  test.each([
+    ["kubectl debug node/n1 -- rm -rf /data", "/host"],
+    ["oc debug Nodes/n1 -- rm -rf /data", "/host"],
+    ["kubectl debug api-0 -- rm -rf /data", undefined],
+    ["kubectl debug node/n1 -- ssh n2 rm -rf /data", undefined],
+  ])("%s mounts the host at %s", (input, hostRoot) => {
+    const result = atoms(input)
+    expect(result).toHaveLength(1)
+    expect(result[0]!.hostRoot).toBe(hostRoot)
+  })
+
+  test.each([
+    ["k3s kubectl delete ns prod", ["k3s"]],
+    ["k3s crictl rmi -a", ["k3s"]],
+    ["microk8s ctr images rm x", ["microk8s"]],
+    ["microk8s helm uninstall x", ["microk8s"]],
+    ["microk8s helm3 uninstall x", ["microk8s"]],
+    ["k0s kubectl delete ns prod", ["k0s"]],
+  ])("%s runs the bundled tool", (input, wrapperChain) => {
+    expect(only(input)).toMatchObject({ argv: input.split(" ").slice(1), isRemote: false, wrapperChain })
+  })
+
+  test("microk8s.kubectl runs kubectl", () => {
+    expect(only("microk8s.kubectl delete ns prod")).toMatchObject({
+      argv: ["kubectl", "delete", "ns", "prod"],
+      wrapperChain: ["microk8s.kubectl"],
+    })
+  })
+
+  test.each([
+    "kubectl debug node/n1 -it --image=busybox",
+    "kubectl debug api-0 --copy-to=dbg",
+    "oc rsh api-0",
+    "oc rsh -c app api-0",
+    "k3s server",
+    "k0s status",
+    "microk8s status",
+  ])("%s is not unwrapped", (input) => {
+    expect(only(input).wrapperChain).toEqual([])
   })
 
   test.each(["kubectl get pods", "kubectl exec pod", "docker ps", "docker exec web", "crictl ps", "nerdctl exec web"])("%s is not unwrapped", (input) => {

@@ -1,5 +1,5 @@
 {
-  "description": "适用对象：服务器带外管理（BMC）。覆盖 ipmitool、redfishtool，以及发往 Redfish API 的 HTTP 写请求",
+  "description": "适用对象：服务器带外管理（BMC）。覆盖 ipmitool、racadm（Dell iDRAC）、redfishtool，以及发往 Redfish API 的 HTTP 写请求",
   "rules": [
     {
       "id": "ipmitool-power",
@@ -34,6 +34,7 @@
       "command": "ipmitool",
       "subcommands": [
         "mc reset",
+        "bmc reset",
         "raw",
         "lan set",
         "user set",
@@ -53,6 +54,7 @@
       "examples": {
         "match": [
           "ipmitool mc reset cold",
+          "ipmitool -I lanplus -H bmc1 bmc reset warm",
           "ipmitool -H bmc1 raw 0x30 0x01",
           "ipmitool lan set 1 ipaddr 10.0.0.9",
           "ipmitool -H bmc1 sensor thresh CPU0_Temp upper 80 90 95",
@@ -66,6 +68,17 @@
           "ipmitool -H bmc1 sensor get CPU0_Temp",
           "echo ipmitool mc reset cold"
         ]
+      }
+    },
+    {
+      "id": "racadm-power",
+      "severity": "critical",
+      "reason": "禁止通过 Dell iDRAC 断电、复位或重启主机",
+      "command": "racadm",
+      "subcommands": ["serveraction powerdown", "serveraction powercycle", "serveraction hardreset", "serveraction graceshutdown"],
+      "examples": {
+        "match": ["racadm serveraction powerdown", "racadm -r 10.0.0.5 -u root -p calvin serveraction powercycle"],
+        "ignore": ["racadm serveraction powerstatus", "racadm serveraction powerup", "echo racadm serveraction powerdown"]
       }
     },
     {

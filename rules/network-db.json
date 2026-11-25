@@ -1,5 +1,5 @@
 {
-  "description": "适用对象：主机网络配置与数据库。覆盖 ip、ifdown、nmcli、iptables、nft、rsync 的删除选项，以及数据库客户端（mysql、psql、mongosh、redis-cli 等）的删库、删表与清空操作",
+  "description": "适用对象：主机网络配置与数据库。覆盖 ip、ifdown、networkctl、nmcli、iptables、nft、ufw、firewall-cmd、rsync 的删除选项，以及数据库客户端（mysql、psql、mongosh、redis-cli 等）与 dropdb、mysqladmin 的删库、删表与清空操作",
   "rules": [
     {
       "id": "ip-link-down",
@@ -10,6 +10,17 @@
       "examples": {
         "match": ["ip link set eth0 down", "ip -n ns1 l s dev eth1 down", "ssh leaf1 ip link set swp1 down"],
         "ignore": ["ip link set eth0 up", "ip link show", "echo ip link set eth0 down"]
+      }
+    },
+    {
+      "id": "ip-link-delete",
+      "severity": "high",
+      "reason": "禁止删除网络接口",
+      "command": "ip",
+      "pattern": "(^| )(l|li|lin|link) (d|de|del|dele|delet|delete)( |$)",
+      "examples": {
+        "match": ["ip link del bond0", "ip link delete vxlan.calico", "ssh n1 ip -n ns1 l d veth0"],
+        "ignore": ["ip link show bond0", "ip link add br0 type bridge", "echo ip link del bond0"]
       }
     },
     {
@@ -24,23 +35,39 @@
       }
     },
     {
+      "id": "ip-addr-change",
+      "severity": "medium",
+      "reason": "添加或修改 IP 地址需要确认",
+      "command": "ip",
+      "pattern": "^ip( -(n|netns|b|batch|rc|rcvbuf|l|loops|f|family) \\S+| -\\S+)* (a|ad|add|addr|addre|addres|address) (a|ad|add|c|ch|cha|chan|chang|change|chg|r|re|rep|repl|repla|replac|replace|res|rest|resto|restor|restore)( |$)",
+      "examples": {
+        "match": [
+          "ip addr add 10.0.0.2/24 dev eth0",
+          "ssh n1 ip a replace 10.0.0.2/24 dev eth0",
+          "ip -6 address change 2001:db8::2/64 dev eth0",
+          "ip -n ns1 addr add 10.0.0.2/24 dev eth0"
+        ],
+        "ignore": ["ip a", "ip -br addr show dev eth0", "ip link add a type dummy", "echo ip addr add 10.0.0.2/24 dev eth0"]
+      }
+    },
+    {
       "id": "ifdown",
       "severity": "high",
       "reason": "禁止关闭网络接口",
-      "pattern": "^(ifdown|ifconfig .* down)( |$)",
+      "pattern": "^(ifdown|ifconfig .* down|networkctl( -\\S+)* down)( |$)",
       "examples": {
-        "match": ["ifdown eth0", "ifconfig eth0 down"],
-        "ignore": ["ifup eth0", "ifconfig eth0", "echo ifdown eth0"]
+        "match": ["ifdown eth0", "ifconfig eth0 down", "networkctl down eth0"],
+        "ignore": ["ifup eth0", "ifconfig eth0", "networkctl status eth0", "echo ifdown eth0"]
       }
     },
     {
       "id": "nmcli-down",
       "severity": "high",
-      "reason": "禁止断开或删除 NetworkManager 连接",
+      "reason": "禁止断开或删除 NetworkManager 连接，或关闭全部网络",
       "command": "nmcli",
-      "subcommands": ["delete", "del", "down", "disconnect"],
+      "subcommands": ["delete", "del", "down", "disconnect", "networking off"],
       "examples": {
-        "match": ["nmcli connection down eth0", "nmcli con delete office", "nmcli device disconnect eth1"],
+        "match": ["nmcli connection down eth0", "nmcli con delete office", "nmcli device disconnect eth1", "nmcli networking off"],
         "ignore": ["nmcli con show", "nmcli device status", "echo nmcli con down eth0"]
       }
     },
@@ -68,6 +95,49 @@
           "iptables --delete INPUT 1",
           "iptables -AFORWARD -j DROP"
         ]
+      }
+    },
+    {
+      "id": "iptables-policy-drop",
+      "severity": "high",
+      "reason": "禁止把防火墙链的默认策略改为丢弃（可能切断当前连接）",
+      "command": [
+        "iptables",
+        "ip6tables",
+        "iptables-legacy",
+        "ip6tables-legacy",
+        "iptables-nft",
+        "ip6tables-nft",
+        "ebtables",
+        "arptables"
+      ],
+      "flags": ["-P", "--policy"],
+      "pattern": " (DROP|REJECT)( |$)",
+      "examples": {
+        "match": ["iptables -P INPUT DROP", "ip6tables --policy FORWARD DROP", "ssh n1 iptables -t filter -P OUTPUT DROP"],
+        "ignore": ["iptables -P INPUT ACCEPT", "iptables -A INPUT -p tcp -j DROP", "echo iptables -P INPUT DROP"]
+      }
+    },
+    {
+      "id": "ufw-lockout",
+      "severity": "high",
+      "reason": "禁止启用 ufw 或把默认策略改为拒绝（可能切断当前连接）",
+      "command": "ufw",
+      "subcommands": ["enable", "default deny", "default reject"],
+      "examples": {
+        "match": ["ufw --force enable", "ssh n1 ufw default deny incoming"],
+        "ignore": ["ufw status verbose", "ufw allow 22/tcp", "echo ufw enable"]
+      }
+    },
+    {
+      "id": "firewalld-panic",
+      "severity": "high",
+      "reason": "禁止开启 firewalld 应急模式（丢弃全部流量，会切断当前连接）",
+      "command": "firewall-cmd",
+      "flags": ["--panic-on"],
+      "examples": {
+        "match": ["firewall-cmd --panic-on", "ssh n1 firewall-cmd --panic-on"],
+        "ignore": ["firewall-cmd --panic-off", "firewall-cmd --query-panic", "echo firewall-cmd --panic-on"]
       }
     },
     {
@@ -116,6 +186,39 @@
           "psql -h db <<'SQL'\nDROP TABLE users;\nSQL"
         ],
         "ignore": ["mysql -e 'SELECT 1'", "psql -c 'select * from drop_log'", "echo 'DROP DATABASE app'"]
+      }
+    },
+    {
+      "id": "sql-dropdb",
+      "severity": "high",
+      "reason": "禁止通过命令行工具删除数据库",
+      "command": ["dropdb", "mysqladmin", "mariadb-admin"],
+      "pattern": "^dropdb( |$)|^(mysqladmin|mariadb-admin) (.* )?drop( |$)",
+      "examples": {
+        "match": ["dropdb app", "mysqladmin -f drop app", "ssh db1 mariadb-admin -uroot drop app"],
+        "ignore": ["mysqladmin status", "echo dropdb app"]
+      }
+    },
+    {
+      "id": "sql-delete-all",
+      "severity": "high",
+      "reason": "禁止不带条件地删除整张表或整个集合的数据",
+      "command": ["mysql", "mariadb", "psql", "sqlite3", "clickhouse-client", "clickhouse", "cockroach", "sqlcmd", "duckdb", "mongo", "mongosh"],
+      "pattern": "(?i:\\bdelete\\s+from\\s+[\\w.\"`]+(?!\\s+(\\w+\\s+){0,2}(where|using)\\b)(?=\\s*(;|$|\\s)))|\\.(deleteMany|remove)\\(\\s*\\{\\s*\\}\\s*\\)",
+      "examples": {
+        "match": [
+          "psql -c 'DELETE FROM users'",
+          "mysql app -e 'delete from logs;'",
+          "mongosh app --eval 'db.users.deleteMany({})'",
+          "psql -c 'DELETE FROM users RETURNING *'"
+        ],
+        "ignore": [
+          "psql -c 'DELETE FROM users WHERE id=1'",
+          "psql -c 'DELETE FROM users AS u WHERE u.id=1'",
+          "psql -c 'DELETE FROM users WHERE id=1 RETURNING *'",
+          "mongosh app --eval 'db.users.deleteMany({age: 1})'",
+          "echo psql -c 'DELETE FROM users'"
+        ]
       }
     },
     {

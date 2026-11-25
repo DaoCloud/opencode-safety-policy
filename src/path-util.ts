@@ -171,7 +171,15 @@ export function expandPathArgs(
 
   if (name === "find") {
     let i = 1
-    while (i < argv.length && /^-([HLP]+|D|O\d*)$/.test(argv[i]!)) i += argv[i] === "-D" ? 2 : 1
+    // GNU `-H -L -P -D -O`, BSD `-E -X -d -s -x`, and `--` after them.
+    while (i < argv.length && /^-([HLPEXdsx]+|D|O\d*)$/.test(argv[i]!)) i += argv[i] === "-D" ? 2 : 1
+    if (argv[i] === "--") i++
+    // GNU find searches `.` when no start path is given.
+    if (i >= argv.length || /^[-(!),]/.test(argv[i]!)) {
+      const at = Math.min(i, argv.length)
+      const withDot = [...argv.slice(0, at), ".", ...argv.slice(at)]
+      return expandPathArgs(withDot, [...expanded.slice(0, at), false, ...expanded.slice(at)], cwd, home, links)
+    }
     for (; i < argv.length && !/^[-(!),]/.test(argv[i]!); i++) rewrite(i)
     return result()
   }

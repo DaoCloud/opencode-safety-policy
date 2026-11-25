@@ -42,6 +42,8 @@ export interface Atom {
   /** True inside `ssh`, `kubectl exec` and `docker exec`: paths refer to another filesystem. */
   isRemote: boolean
   targetHost?: string
+  /** Where the root filesystem of the target host is mounted, such as `/host` in `kubectl debug node/x`. */
+  hostRoot?: string
   /** Wrappers from outermost to innermost, e.g. `["ssh", "sudo", "bash -c"]`. */
   wrapperChain: string[]
   /** The tokenized command this atom comes from (redirects, connector). */
@@ -90,6 +92,7 @@ interface Context {
   isRemote: boolean
   localCommands: Command[]
   targetHost?: string
+  hostRoot?: string
   wrapperChain: string[]
   depth: number
   stdin?: string
@@ -113,6 +116,8 @@ interface Layer {
   inner: Inner
   /** Switches to a remote context on this host. */
   host?: string
+  /** The root filesystem of `host` is mounted at this path in the inner context. */
+  hostRoot?: string
   /** The wrapper consumes stdin (or detaches it), so inner commands do not inherit it. */
   readsStdin?: boolean
   /** The inner command runs in this directory; `null` when it is unknown statically. */
@@ -441,6 +446,7 @@ function atomBase(context: Context, command: Command): Atom {
     localCommands: context.localCommands,
   }
   if (context.targetHost !== undefined) atom.targetHost = context.targetHost
+  if (context.hostRoot !== undefined) atom.hostRoot = context.hostRoot
   if (context.stdin !== undefined) atom.stdin = context.stdin
   if (context.piped) atom.piped = true
   if (context.chdir) atom.chdir = context.chdir
@@ -484,6 +490,8 @@ function walkArgv(
     if (context.prescan) next.prescan = true
     const host = layer.host ?? context.targetHost
     if (host !== undefined) next.targetHost = host
+    const hostRoot = layer.host !== undefined ? layer.hostRoot : context.hostRoot
+    if (hostRoot !== undefined) next.hostRoot = hostRoot
     if (!layer.readsStdin) {
       if (context.stdin !== undefined) next.stdin = context.stdin
       if (context.piped) next.piped = context.piped
@@ -800,19 +808,47 @@ function ssh(args: string[], _: boolean[], stdin?: string, piped?: Piped): Layer
   return layers
 }
 
-function kubectl(args: string[], expanded: boolean[]): Layer[] {
-  const positionals: number[] = []
-  let i = 0
-  while (i < args.length && args[i] !== "--") {
-    const option = readOption(args, i, OPTION_SPECS.kubectl)
-    if (option) i = option.next
-    else positionals.push(i++)
+/** `kubectl exec`, `kubectl debug` and `oc rsh`; `oc` and `kubecolor` take the same arguments. */
+function kubectl(name: string): Unwrapper {
+  return (args, expanded) => {
+    const positionals: number[] = []
+    let i = 0
+    while (i < args.length && args[i] !== "--") {
+      const option = readOption(args, i, OPTION_SPECS.kubectl)
+      if (option) i = option.next
+      else positionals.push(i++)
+    }
+    const [sub, target, command] = positionals
+    if (sub !== undefined && args[sub] === "rsh") return rsh(name, args, expanded, sub + 1)
+    // `kubectl debug target... -- command` runs in a debug container of a pod, or on a node (`node/x`), where the
+    // root filesystem of the node is mounted at `/host`.
+    if (sub !== undefined && args[sub] === "debug" && target !== undefined && i + 1 < args.length) {
+      const targets = positionals.slice(1).map((k) => args[k]!)
+      const inner = { argv: args.slice(i + 1), expanded: expanded.slice(i + 1) }
+      const layer: Layer = { label: `${name} debug`, host: targets.join(","), inner }
+      if (targets.some((arg) => /^(nodes?|no)\//i.test(arg))) layer.hostRoot = "/host"
+      return [layer]
+    }
+    if (sub === undefined || args[sub] !== "exec" || target === undefined) return []
+    const start = i < args.length ? i + 1 : command
+    if (start === undefined || start >= args.length) return []
+    return [{ label: `${name} exec`, host: args[target], inner: { argv: args.slice(start), expanded: expanded.slice(start) } }]
   }
-  const [sub, target, command] = positionals
-  if (sub === undefined || args[sub] !== "exec" || target === undefined) return []
-  const start = i < args.length ? i + 1 : command
-  if (start === undefined || start >= args.length) return []
-  return [{ label: "kubectl exec", host: args[target], inner: { argv: args.slice(start), expanded: expanded.slice(start) } }]
+}
+
+/**
+ * `oc rsh [options] pod command...`: options end at the pod, and the rest is the command. With `-f file` there is
+ * no pod argument. Without a command it opens an interactive shell.
+ */
+function rsh(name: string, args: string[], expanded: boolean[], i: number): Layer[] {
+  let file: string | undefined
+  for (let option; (option = readOption(args, i, OPTION_SPECS.kubectl)); i = option.next) {
+    if (option.name === "-f" || option.name === "--filename") file = option.value
+  }
+  const start = file === undefined ? i + 1 : i
+  if (start >= args.length) return []
+  const host = file ?? args[i]!
+  return [{ label: `${name} rsh`, host, inner: { argv: args.slice(start), expanded: expanded.slice(start) } }]
 }
 
 /**
@@ -1136,6 +1172,148 @@ function chroot(args: string[], expanded: boolean[], stdin?: string, piped?: Pip
       ? [{ label: "chroot", inner: { argv: args.slice(start), expanded: expanded.slice(start) } }]
       : shell("chroot")([], [], stdin, piped)
   return inDir(layers, skip ? undefined : "/")
+}
+
+/**
+ * `nsenter [options] [command...]`; without a command it runs a shell. Entering a mount namespace (`-m`, or `-a`
+ * for all namespaces) moves to its root unless `-w` / `-W` sets the directory.
+ */
+function nsenter(args: string[], expanded: boolean[], stdin?: string, piped?: Piped): Layer[] {
+  const spec = OPTION_SPECS.nsenter
+  let mount = false
+  let wd: string | null | undefined
+  let i = 0
+  while (i < args.length) {
+    if (args[i] === "--") {
+      i++
+      break
+    }
+    const option = readOption(args, i, spec)
+    if (!option) break
+    const names = optionNames(args[i]!, option, spec)
+    if (["-m", "--mount", "-a", "--all"].some((name) => names.includes(name))) mount = true
+    if (["-w", "-W", "--wd", "--wdns"].includes(option.name)) wd = option.value || null
+    i = option.next
+  }
+  const layers: Layer[] =
+    i < args.length
+      ? [{ label: "nsenter", inner: { argv: args.slice(i), expanded: expanded.slice(i) } }]
+      : shell("nsenter")([], [], stdin, piped)
+  return inDir(layers, wd !== undefined ? wd : mount ? "/" : undefined)
+}
+
+/** `unshare [options] [command...]`; without a command it runs a shell. `-R` moves to the new root unless `-w` is given. */
+function unshare(args: string[], expanded: boolean[], stdin?: string, piped?: Piped): Layer[] {
+  let root = false
+  let wd: string | undefined
+  let i = 0
+  while (i < args.length) {
+    if (args[i] === "--") {
+      i++
+      break
+    }
+    const option = readOption(args, i, OPTION_SPECS.unshare)
+    if (!option) break
+    if (option.name === "-R" || option.name === "--root") root = true
+    if (option.name === "-w" || option.name === "--wd") wd = option.value ?? ""
+    i = option.next
+  }
+  const layers: Layer[] =
+    i < args.length
+      ? [{ label: "unshare", inner: { argv: args.slice(i), expanded: expanded.slice(i) } }]
+      : shell("unshare")([], [], stdin, piped)
+  return inDir(layers, wd ?? (root ? "/" : undefined))
+}
+
+/**
+ * `systemd-run [options] command...` runs the command in a transient unit: on another host with `-H`, in a container
+ * with `-M`, and in `/` (the home directory with `--user`) unless `--scope` or `--same-dir` keeps the directory.
+ * `--shell` runs a shell instead of a command.
+ */
+function systemdRun(args: string[], expanded: boolean[], stdin?: string, piped?: Piped): Layer[] {
+  const spec = OPTION_SPECS.systemdRun
+  let host: string | undefined
+  let same = false
+  let user = false
+  let runShell = false
+  let wd: string | null | undefined
+  let i = 0
+  while (i < args.length) {
+    if (args[i] === "--") {
+      i++
+      break
+    }
+    const option = readOption(args, i, spec)
+    if (!option) break
+    const names = optionNames(args[i]!, option, spec)
+    const value = option.value ?? ""
+    if (option.name === "-H" || option.name === "--host") host = sshHost(value)
+    // `.host` and an empty machine name are the local host.
+    if ((option.name === "-M" || option.name === "--machine") && !/^([^@]*@)?(\.host)?$/.test(value)) {
+      host = value.slice(value.indexOf("@") + 1)
+    }
+    if (["--scope", "-d", "--same-dir"].some((name) => names.includes(name))) same = true
+    if (names.includes("-S") || names.includes("--shell")) runShell = true
+    if (names.includes("--user")) user = true
+    if (option.name === "--working-directory") wd = value
+    if ((option.name === "-p" || option.name === "--property") && value.startsWith("WorkingDirectory=")) wd = null
+    i = option.next
+  }
+  let layers: Layer[]
+  if (i < args.length) {
+    const layer: Layer = { label: "systemd-run", inner: { argv: args.slice(i), expanded: expanded.slice(i) } }
+    if (host !== undefined) layer.host = host
+    layers = [layer]
+  } else if (runShell) {
+    return stdinLayers("systemd-run", stdin, piped, host)
+  } else {
+    return []
+  }
+  if (host !== undefined) return layers
+  return inDir(layers, wd !== undefined ? wd : same ? undefined : user ? null : "/")
+}
+
+/** `ip` options that take a value, with the shortest prefix iproute2 accepts for each. */
+const IP_VALUE_OPTIONS: [string, number][] = [["-loops", 2], ["-family", 2], ["-batch", 2], ["-rcvbuf", 3], ["-netns", 2]]
+
+/**
+ * `ip [options] netns exec <name> command...`, `ip -all netns exec command...` and `ip [options] vrf exec <vrf>
+ * command...` run a command on this host. iproute2 accepts prefixes of options, objects and `exec`.
+ */
+function ip(args: string[], expanded: boolean[]): Layer[] {
+  const prefix = (word: string, name: string, min = 1) => word.length >= min && name.startsWith(word)
+  let all = false
+  let i = 0
+  for (; i < args.length && args[i]!.startsWith("-"); i++) {
+    if (args[i] === "--") {
+      i++
+      break
+    }
+    const option = args[i]!.replace(/^--/, "-")
+    if (prefix(option, "-all", 2)) all = true
+    if (IP_VALUE_OPTIONS.some(([name, min]) => prefix(option, name, min))) i++
+  }
+  const object = args[i] ?? ""
+  if (!prefix(args[i + 1] ?? "", "exec")) return []
+  let label: string
+  let start: number
+  if (prefix(object, "netns", 3)) [label, start] = ["ip netns exec", all ? i + 2 : i + 3]
+  else if (prefix(object, "vrf")) [label, start] = ["ip vrf exec", i + 3]
+  else return []
+  if (start >= args.length) return []
+  return [{ label, inner: { argv: args.slice(start), expanded: expanded.slice(start) } }]
+}
+
+/** `k3s` / `k0s` / `microk8s` run their bundled `kubectl` and other CLIs: `k3s kubectl delete ns x`. */
+function bundled(label: string, names: readonly string[]): Unwrapper {
+  return (args, expanded) => (names.includes(args[0] ?? "") ? [{ label, inner: { argv: args, expanded } }] : [])
+}
+
+const MICROK8S_TOOLS = ["kubectl", "ctr", "helm", "helm3"]
+
+/** A command that runs `tool` with its own arguments. */
+function alias(label: string, tool: string): Unwrapper {
+  return (args, expanded) => [{ label, inner: { argv: [tool, ...args], expanded: [false, ...expanded] } }]
 }
 
 /** `flock [options] file command...` or `flock [options] file -c command`; `flock fd` runs nothing. */
@@ -1592,7 +1770,12 @@ const WRAPPERS: Record<string, Unwrapper> = {
   xargs,
   eval: (args) => (args.length ? [{ label: "eval", inner: { script: args.join(" ") } }] : []),
   ssh,
-  kubectl,
+  ...Object.fromEntries(["kubectl", "oc", "kubecolor"].map((name) => [name, kubectl(name)])),
+  k3s: bundled("k3s", ["kubectl", "crictl", "ctr"]),
+  k0s: bundled("k0s", ["kubectl", "ctr"]),
+  microk8s: bundled("microk8s", MICROK8S_TOOLS),
+  // Snap aliases: `microk8s.kubectl delete ns x`.
+  ...Object.fromEntries(MICROK8S_TOOLS.map((tool) => [`microk8s.${tool}`, alias(`microk8s.${tool}`, tool)])),
   docker: containerExec("docker", OPTION_SPECS.docker, OPTION_SPECS.dockerExec),
   nerdctl: containerExec("nerdctl", OPTION_SPECS.nerdctl, OPTION_SPECS.nerdctlExec),
   podman: containerExec("podman", OPTION_SPECS.podman, OPTION_SPECS.podmanExec, new Set(["-l", "--latest", "--cidfile"])),
@@ -1604,6 +1787,11 @@ const WRAPPERS: Record<string, Unwrapper> = {
   "parallel-ssh": pssh("parallel-ssh"),
   clush,
   chroot,
+  nsenter,
+  unshare,
+  ip,
+  setpriv: optionsThen("setpriv", OPTION_SPECS.setpriv),
+  "systemd-run": systemdRun,
   flock,
   watch,
   parallel,

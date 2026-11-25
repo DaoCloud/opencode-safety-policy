@@ -63,6 +63,19 @@ describe("working directory", () => {
     expect(verdict("cd $X && rm -rf build")).toEqual(["ask", "rm-local"])
   })
 
+  test.each([
+    ["find . -name '*.tmp' -delete", {}, "find-delete-local"],
+    ["find ~ -name '*.log' -delete", { home: "/home/alice" }, "find-delete-system-path"],
+    ["cd / && find etc -delete", {}, "find-delete-system-path"],
+    ["cd / && find -delete", {}, "find-delete-system-path"],
+    ["cd /var/lib/etcd && find -L -type f -delete", {}, "find-delete-system-path"],
+    ["find -name '*.pyc' -delete", {}, "find-delete-local"],
+    ["cd /tmp && find -- ../etc -delete", {}, "find-delete-system-path"],
+    ["cd /tmp && find -E ../etc -delete", {}, "find-delete-system-path"],
+  ])("%s %o is judged by its canonical start path", (command, options, ruleId) => {
+    expect(verdict(command, options)[1]).toBe(ruleId)
+  })
+
   test("too many directories fall back to an unknown one", () => {
     const cds = Array.from({ length: 8 }, (_, i) => `cd /ocsp-analyzer/d${i}`).join("; ")
     expect(verdict(`${cds}; rm -rf etc`)).toEqual(["ask", "rm-system-path"])
@@ -87,6 +100,11 @@ describe("wrappers and stdin", () => {
     "sudo {rm,-rf,/}",
     "find /tmp -exec sh -c 'rm -rf /etc' \\;",
     "chroot /mnt rm -rf etc",
+    "nsenter -t 1 -m rm -rf etc",
+    "unshare -R /mnt rm -rf etc",
+    "systemd-run rm -rf etc",
+    "ip netns exec ns1 rm -rf /etc",
+    "kubectl debug node/n1 -it --image=busybox -- chroot /host rm -rf /etc",
     "flock /tmp/l -c 'rm -rf /'",
     "watch -n1 rm -rf /etc",
     "parallel rm -rf ::: /tmp/x /etc",
@@ -137,15 +155,20 @@ describe("wrappers and stdin", () => {
     "parallel -m chown -R nobody ::: /etc /usr",
     "parallel -N2 'chmod -R 777 {2}' ::: a /etc",
     "parallel 'chmod -R 777 {2}' ::: a ::: /etc",
-    "parallel 'chown -R nobody {//}' ::: /x/",
     "parallel -N2 'chmod -R 777 {1}{2}' ::: a b /etc",
     "parallel -N2 -n1 'chmod -R 777 {2}' ::: a /etc",
     "parallel -n ' ' 'chmod -R 777' ::: /etc",
     "parallel -N '' 'chmod -R 777 {}' ::: /etc",
-    "parallel -L 0 'chmod -R 777 /{}' ::: a",
   ])("grouped values in %s are each checked", (command) => {
     expect(verdict(command)).toEqual(["deny", "chmod-chown-recursive-system"])
   })
+
+  test.each(["parallel 'chown -R nobody {//}' ::: /x/", "parallel -L 0 'chmod -R 777 /{}' ::: a"])(
+    "grouped values in %s resolve to the root",
+    (command) => {
+      expect(verdict(command)).toEqual(["deny", "chmod-chown-recursive-root"])
+    },
+  )
 
   test.each([
     "ansible all -m shell -a 'kubectl delete ns prod'",
@@ -571,6 +594,27 @@ describe("remote commands", () => {
   ])("rules win over the allowlist: %s", (command, ruleId) => {
     expect(verdict(command)).toEqual(["deny", ruleId])
   })
+
+  test("ip a is read-only, but adding an address is not", () => {
+    expect(verdict("ssh node1 ip -br a")).toEqual(["allow", undefined])
+    expect(verdict("ssh node1 ip a add 10.0.0.2/24 dev eth0")).toEqual(["ask", "ip-addr-change"])
+  })
+
+  test.each([
+    ["kubectl debug node/n1 -it --image=busybox -- rm -rf /host/etc", "rm-system-path"],
+    ["oc debug node/n1 -- sh -c 'rm -rf /host/var/lib/etcd'", "rm-k8s-state"],
+    ["kubectl debug node/n1 -- rm -rf /host", "rm-system-path"],
+    ["kubectl debug node/n1 -- dd if=/dev/zero of=/host/dev/sda", "dd-to-device"],
+  ])("paths under /host of a node debug pod are host paths: %s", (command, ruleId) => {
+    expect(verdict(command, { mode: "relaxed" })).toEqual(["deny", ruleId])
+  })
+
+  test.each(["kubectl debug api-0 -- rm -rf /host/etc", "kubectl debug node/n1 -- ssh n2 rm -rf /host/etc"])(
+    "/host is not a host mount in %s",
+    (command) => {
+      expect(verdict(command, { mode: "relaxed" })).toEqual(["ask", "remote-rm"])
+    },
+  )
 
   test("sshReadOnlyAllowlist adds commands", () => {
     expect(verdict("ssh node1 ibdiagnet")).toEqual(["ask", "unknown-remote-command"])
