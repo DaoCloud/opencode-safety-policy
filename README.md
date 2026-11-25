@@ -27,7 +27,7 @@
 
 要求 OpenCode 2.x 且不低于 2.3.0，CI 使用 2.4.1 测试。支持 Linux 和 macOS，CI 在两个系统上都运行单元测试和 E2E 测试。下面的步骤两个系统通用，有区别的地方分别写明。
 
-下文以 v0.1.1 为例，可用版本见 [Releases](https://github.com/DaoCloud/opencode-safety-policy/releases)。
+下文以 v0.2.0 为例，可用版本见 [Releases](https://github.com/DaoCloud/opencode-safety-policy/releases)。
 
 能访问 GitHub 时用[在线安装](#在线安装)，否则用[离线安装](#离线安装)。两种方式都要在 OpenCode 的配置文件中注册插件，写在哪个文件决定了插件的生效范围：
 
@@ -56,14 +56,14 @@ OpenCode 加载插件后会检查一次新版本，之后每 24 小时再查一�
 - TUI：输入 `/plugins` 打开插件列表，按 `ctrl+r` 立即检查，选中本插件后按 `ctrl+u` 升级。
 - Desktop：在设置的 Extensions → Plugins 中点 Update。
 
-升级后插件自动重新加载，不用重启 OpenCode。需要固定版本时，把 `#semver:*` 换成 `#v0.1.1` 这样的 tag，固定版本不会提示更新。
+升级后插件自动重新加载，不用重启 OpenCode。需要固定版本时，把 `#semver:*` 换成 `#v0.2.0` 这样的 tag，固定版本不会提示更新。
 
 ### 离线安装
 
 在能联网的机器上，从 Release 下载 tarball 和校验文件：
 
 ```bash
-VERSION=0.1.1
+VERSION=0.2.0
 BASE=https://github.com/DaoCloud/opencode-safety-policy/releases/download/v$VERSION
 curl -fL -O "$BASE/daocloud-opencode-safety-policy-$VERSION.tgz" -O "$BASE/SHA256SUMS"
 ```
