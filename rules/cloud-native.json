@@ -1,5 +1,5 @@
 {
-  "description": "适用对象：Kubernetes 集群及容器运行时。覆盖 kubectl（及 oc、kubecolor）、kubeadm、k3s 与 rke2 卸载脚本、helm、etcdctl、velero，以及 docker、docker-compose、nerdctl、podman、crictl、ctr",
+  "description": "适用对象：Kubernetes 集群及容器运行时。覆盖 kubectl（及 oc、kubecolor）、kubeadm、k0s 与 microk8s reset、k3s 与 rke2 卸载脚本、helm、etcdctl、velero，以及 docker、docker-compose、nerdctl、podman、crictl、ctr",
   "rules": [
     {
       "id": "k8s-delete-namespace",
@@ -12,6 +12,7 @@
         "match": [
           "kubectl delete ns prod",
           "kubectl --context prod delete namespace payments",
+          "oc --loglevel 5 delete project payments",
           "kubectl delete namespaces/payments",
           "ssh master kubectl delete ns,deploy x",
           "kubectl delete Namespace prod",
@@ -47,12 +48,12 @@
     {
       "id": "k8s-node-reset",
       "severity": "critical",
-      "reason": "禁止用 kubeadm reset 清除节点上的 Kubernetes 组件与证书",
-      "command": "kubeadm",
+      "reason": "禁止用 kubeadm、k0s 或 microk8s reset 清除节点上的 Kubernetes 组件与数据",
+      "command": ["kubeadm", "k0s", "microk8s"],
       "subcommands": ["reset"],
       "examples": {
-        "match": ["kubeadm reset -f", "ssh cp1 sudo kubeadm reset --force"],
-        "ignore": ["kubeadm token list", "kubeadm certs check-expiration", "echo kubeadm reset -f"]
+        "match": ["kubeadm reset -f", "ssh cp1 sudo kubeadm reset --force", "sudo k0s reset", "microk8s reset --destroy-storage"],
+        "ignore": ["kubeadm token list", "kubeadm certs check-expiration", "k0s status", "microk8s status", "echo kubeadm reset -f"]
       }
     },
     {

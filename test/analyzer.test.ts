@@ -70,6 +70,8 @@ describe("working directory", () => {
     ["cd / && find -delete", {}, "find-delete-system-path"],
     ["cd /var/lib/etcd && find -L -type f -delete", {}, "find-delete-system-path"],
     ["find -name '*.pyc' -delete", {}, "find-delete-local"],
+    ["cd /tmp && find -- ../etc -delete", {}, "find-delete-system-path"],
+    ["cd /tmp && find -E ../etc -delete", {}, "find-delete-system-path"],
   ])("%s %o is judged by its canonical start path", (command, options, ruleId) => {
     expect(verdict(command, options)[1]).toBe(ruleId)
   })
@@ -101,6 +103,7 @@ describe("wrappers and stdin", () => {
     "nsenter -t 1 -m rm -rf etc",
     "unshare -R /mnt rm -rf etc",
     "systemd-run rm -rf etc",
+    "ip netns exec ns1 rm -rf /etc",
     "kubectl debug node/n1 -it --image=busybox -- chroot /host rm -rf /etc",
     "flock /tmp/l -c 'rm -rf /'",
     "watch -n1 rm -rf /etc",

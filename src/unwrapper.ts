@@ -1273,6 +1273,37 @@ function systemdRun(args: string[], expanded: boolean[], stdin?: string, piped?:
   return inDir(layers, wd !== undefined ? wd : same ? undefined : user ? null : "/")
 }
 
+/** `ip` options that take a value, with the shortest prefix iproute2 accepts for each. */
+const IP_VALUE_OPTIONS: [string, number][] = [["-loops", 2], ["-family", 2], ["-batch", 2], ["-rcvbuf", 3], ["-netns", 2]]
+
+/**
+ * `ip [options] netns exec <name> command...`, `ip -all netns exec command...` and `ip [options] vrf exec <vrf>
+ * command...` run a command on this host. iproute2 accepts prefixes of options, objects and `exec`.
+ */
+function ip(args: string[], expanded: boolean[]): Layer[] {
+  const prefix = (word: string, name: string, min = 1) => word.length >= min && name.startsWith(word)
+  let all = false
+  let i = 0
+  for (; i < args.length && args[i]!.startsWith("-"); i++) {
+    if (args[i] === "--") {
+      i++
+      break
+    }
+    const option = args[i]!.replace(/^--/, "-")
+    if (prefix(option, "-all", 2)) all = true
+    if (IP_VALUE_OPTIONS.some(([name, min]) => prefix(option, name, min))) i++
+  }
+  const object = args[i] ?? ""
+  if (!prefix(args[i + 1] ?? "", "exec")) return []
+  let label: string
+  let start: number
+  if (prefix(object, "netns", 3)) [label, start] = ["ip netns exec", all ? i + 2 : i + 3]
+  else if (prefix(object, "vrf")) [label, start] = ["ip vrf exec", i + 3]
+  else return []
+  if (start >= args.length) return []
+  return [{ label, inner: { argv: args.slice(start), expanded: expanded.slice(start) } }]
+}
+
 /** `k3s` / `k0s` / `microk8s` run their bundled `kubectl` and other CLIs: `k3s kubectl delete ns x`. */
 function bundled(label: string, names: readonly string[]): Unwrapper {
   return (args, expanded) => (names.includes(args[0] ?? "") ? [{ label, inner: { argv: args, expanded } }] : [])
@@ -1758,6 +1789,7 @@ const WRAPPERS: Record<string, Unwrapper> = {
   chroot,
   nsenter,
   unshare,
+  ip,
   setpriv: optionsThen("setpriv", OPTION_SPECS.setpriv),
   "systemd-run": systemdRun,
   flock,

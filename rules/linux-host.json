@@ -29,7 +29,7 @@
       "severity": "critical",
       "reason": "禁止删除 Kubernetes、etcd 与容器运行时的状态目录",
       "command": "rm",
-      "pattern": "(^| )(/var/lib/(etcd(/member)?|kubelet(/pods)?|containerd|docker|cni|calico|rancher(/(k3s|rke2)(/server(/db)?)?)?)|/etc/(kubernetes(/pki|/manifests)?|cni|containerd))(/\\*?)?( |$)",
+      "pattern": "(^| )(/var/lib/(etcd(/member)?|kubelet(/pods)?|containerd|docker|cni|calico|rancher(/(k3s|rke2)(/server(/(db(/(etcd(/member)?|state\\.db\\*?))?|tls))?)?)?)|/etc/(kubernetes(/pki|/manifests)?|cni|containerd))(/\\*?)?( |$)",
       "examples": {
         "match": [
           "rm -rf /var/lib/etcd",
@@ -37,7 +37,10 @@
           "rm -rf /var/lib/etcd/member/*",
           "cd /var/lib && rm -rf kubelet",
           "rm -rf /var/lib/rancher/k3s",
-          "rm -rf /var/lib/kubelet/pods/*"
+          "rm -rf /var/lib/kubelet/pods/*",
+          "rm -rf /var/lib/rancher/rke2/server/db/etcd",
+          "rm -f /var/lib/rancher/k3s/server/db/state.db*",
+          "rm -rf /var/lib/rancher/k3s/server/tls"
         ],
         "ignore": ["rm -f /var/lib/etcd/member/snap/tmp.log", "rm -rf /var/lib/rancher/k3s/agent/images", "rm -rf /var/lib/docker-backup", "echo rm -rf /var/lib/etcd"]
       }
@@ -91,7 +94,7 @@
       "severity": "high",
       "reason": "禁止通过 find 删除根目录、系统目录、主目录或由变量决定的目录下的文件",
       "command": "find",
-      "pattern": "^find( -[HLP]+| -D \\S+| -O\\d*)*( [^-(!),\\s]\\S*)*? (/(\\*|(etc|var|usr|boot|home|data|root|bin|sbin|lib|lib32|lib64|opt|srv|dev|proc|sys|run|mnt|var/lib|usr/local|var/lib/(etcd(/member)?|kubelet(/pods)?|containerd|docker|cni|calico|rancher(/(k3s|rke2)(/server(/db)?)?)?)|etc/(kubernetes(/pki|/manifests)?|cni|containerd)|home/[^/\\s]+|Users(/[^/\\s]+)?)(/\\*?)?)?|~[^/\\s]*(/\\*?)?|\\$(\\w+|\\{\\w+\\})(/\\*?)?)(?= |$)(?=.* (-delete|-(exec|execdir|ok|okdir) (\\S*/)?(rm|rmdir|unlink|shred))( |$))",
+      "pattern": "^find( -[HLPEXdsx]+| -D \\S+| -O\\d*)*( --)?( [^-(!),\\s]\\S*)*? (/(\\*|(etc|var|usr|boot|home|data|root|bin|sbin|lib|lib32|lib64|opt|srv|dev|proc|sys|run|mnt|var/lib|usr/local|var/lib/(etcd(/member)?|kubelet(/pods)?|containerd|docker|cni|calico|rancher(/(k3s|rke2)(/server(/(db(/(etcd(/member)?|state\\.db\\*?))?|tls))?)?)?)|etc/(kubernetes(/pki|/manifests)?|cni|containerd)|home/[^/\\s]+|Users(/[^/\\s]+)?)(/\\*?)?)?|~[^/\\s]*(/\\*?)?|\\$(\\w+|\\{\\w+\\})(/\\*?)?)(?= |$)(?=.* (-delete|-(exec|execdir|ok|okdir) (\\S*/)?(rm|rmdir|unlink|shred))( |$))",
       "examples": {
         "match": [
           "find / -name core -delete",
@@ -101,7 +104,10 @@
           "ssh n1 'find ~ -name \"*.log\" -delete'",
           "find ./a $DIR -delete",
           "cd / && find -name '*.bak' -delete",
-          "ssh n1 find /var/lib/rancher/rke2/server/db -delete"
+          "ssh n1 find /var/lib/rancher/rke2/server/db -delete",
+          "find -- / -delete",
+          "find -E \"$X\" -regex '.*\\.log' -delete",
+          "find /var/lib/rancher/k3s/server/db/etcd -delete"
         ],
         "ignore": ["find /var/log -name '*.gz' -delete", "find . -name '*.tmp' -delete", "find /etc -name '*.conf'", "echo find / -delete"]
       }

@@ -310,7 +310,7 @@ export const OPTION_SPECS = {
     },
   ),
   shell: spec("", ["rcfile", "init-file"]),
-  // Global options plus the value-taking options of `kubectl exec` and `oc rsh`.
+  // Global options (including `oc --loglevel`) plus the value-taking options of `kubectl exec` and `oc rsh`.
   kubectl: spec("nsvcf", [
     "as",
     "as-group",
@@ -328,6 +328,7 @@ export const OPTION_SPECS = {
     "log-file",
     "log-file-max-size",
     "log-flush-frequency",
+    "loglevel",
     "namespace",
     "password",
     "profile",

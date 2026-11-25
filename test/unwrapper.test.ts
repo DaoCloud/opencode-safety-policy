@@ -677,6 +677,11 @@ describe("namespace and service wrappers", () => {
     ["systemd-run -u job --uid root -E A=1 -dqt rm x", ["systemd-run"]],
     ["systemd-run --on-active 30 --work /tmp rm x", ["systemd-run"]],
     ["systemd-run -M .host rm x", ["systemd-run"]],
+    ["ip netns exec ns1 rm x", ["ip netns exec"]],
+    ["ip -all netns exec rm x", ["ip netns exec"]],
+    // iproute2 matches prefixes: `-n` is -netns, `-r` is -resolve, `net` is netns and `e` is exec.
+    ["ip -n ns0 -r net e ns1 rm x", ["ip netns exec"]],
+    ["ip -4 -rc 1024 -- vrf exec mgmt rm x", ["ip vrf exec"]],
   ])("%s", (input, wrapperChain) => {
     expect(only(input)).toMatchObject({ argv: ["rm", "x"], isRemote: false, wrapperChain })
   })
@@ -713,9 +718,12 @@ describe("namespace and service wrappers", () => {
     expect(only("systemd-run -S <<<'rm x'")).toMatchObject({ argv: ["rm", "x"], wrapperChain: ["systemd-run"] })
   })
 
-  test.each(["setpriv --dump", "systemd-run --user", "nsenter -t 1 -m"])("%s is not unwrapped", (input) => {
-    expect(only(input).wrapperChain).toEqual([])
-  })
+  test.each(["setpriv --dump", "systemd-run --user", "nsenter -t 1 -m", "ip netns exec ns1", "ip netns list", "ip ne show"])(
+    "%s is not unwrapped",
+    (input) => {
+      expect(only(input).wrapperChain).toEqual([])
+    },
+  )
 })
 
 describe("long option abbreviations", () => {
@@ -1066,6 +1074,7 @@ describe("container exec", () => {
     ["oc rsh api-0 rm -rf /data", "api-0", ["oc rsh"]],
     ["oc -n prod rsh -c app --shell /bin/bash api-0 rm -rf /data", "api-0", ["oc rsh"]],
     ["oc rsh -f pod.yaml rm -rf /data", "pod.yaml", ["oc rsh"]],
+    ["oc --loglevel 5 rsh api-0 rm -rf /data", "api-0", ["oc rsh"]],
     ["microk8s.kubectl exec api-0 -- rm -rf /data", "api-0", ["microk8s.kubectl", "kubectl exec"]],
   ])("%s", (input, targetHost, wrapperChain) => {
     expect(only(input)).toEqual({ argv: ["rm", "-rf", "/data"], isRemote: true, targetHost, wrapperChain })
