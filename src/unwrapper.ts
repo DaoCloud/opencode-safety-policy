@@ -800,19 +800,27 @@ function ssh(args: string[], _: boolean[], stdin?: string, piped?: Piped): Layer
   return layers
 }
 
-function kubectl(args: string[], expanded: boolean[]): Layer[] {
-  const positionals: number[] = []
-  let i = 0
-  while (i < args.length && args[i] !== "--") {
-    const option = readOption(args, i, OPTION_SPECS.kubectl)
-    if (option) i = option.next
-    else positionals.push(i++)
+/** `kubectl exec` and `kubectl debug`; `oc` and `kubecolor` take the same arguments. */
+function kubectl(name: string): Unwrapper {
+  return (args, expanded) => {
+    const positionals: number[] = []
+    let i = 0
+    while (i < args.length && args[i] !== "--") {
+      const option = readOption(args, i, OPTION_SPECS.kubectl)
+      if (option) i = option.next
+      else positionals.push(i++)
+    }
+    const [sub, target, command] = positionals
+    // `kubectl debug target... -- command` runs in a debug container of a pod, or on a node (`node/x`).
+    if (sub !== undefined && args[sub] === "debug" && target !== undefined && i + 1 < args.length) {
+      const host = positionals.slice(1).map((k) => args[k]).join(",")
+      return [{ label: `${name} debug`, host, inner: { argv: args.slice(i + 1), expanded: expanded.slice(i + 1) } }]
+    }
+    if (sub === undefined || args[sub] !== "exec" || target === undefined) return []
+    const start = i < args.length ? i + 1 : command
+    if (start === undefined || start >= args.length) return []
+    return [{ label: `${name} exec`, host: args[target], inner: { argv: args.slice(start), expanded: expanded.slice(start) } }]
   }
-  const [sub, target, command] = positionals
-  if (sub === undefined || args[sub] !== "exec" || target === undefined) return []
-  const start = i < args.length ? i + 1 : command
-  if (start === undefined || start >= args.length) return []
-  return [{ label: "kubectl exec", host: args[target], inner: { argv: args.slice(start), expanded: expanded.slice(start) } }]
 }
 
 /**
@@ -1136,6 +1144,110 @@ function chroot(args: string[], expanded: boolean[], stdin?: string, piped?: Pip
       ? [{ label: "chroot", inner: { argv: args.slice(start), expanded: expanded.slice(start) } }]
       : shell("chroot")([], [], stdin, piped)
   return inDir(layers, skip ? undefined : "/")
+}
+
+/**
+ * `nsenter [options] [command...]`; without a command it runs a shell. Entering a mount namespace (`-m`, or `-a`
+ * for all namespaces) moves to its root unless `-w` / `-W` sets the directory.
+ */
+function nsenter(args: string[], expanded: boolean[], stdin?: string, piped?: Piped): Layer[] {
+  const spec = OPTION_SPECS.nsenter
+  let mount = false
+  let wd: string | null | undefined
+  let i = 0
+  while (i < args.length) {
+    if (args[i] === "--") {
+      i++
+      break
+    }
+    const option = readOption(args, i, spec)
+    if (!option) break
+    const names = optionNames(args[i]!, option, spec)
+    if (["-m", "--mount", "-a", "--all"].some((name) => names.includes(name))) mount = true
+    if (["-w", "-W", "--wd", "--wdns"].includes(option.name)) wd = option.value || null
+    i = option.next
+  }
+  const layers: Layer[] =
+    i < args.length
+      ? [{ label: "nsenter", inner: { argv: args.slice(i), expanded: expanded.slice(i) } }]
+      : shell("nsenter")([], [], stdin, piped)
+  return inDir(layers, wd !== undefined ? wd : mount ? "/" : undefined)
+}
+
+/** `unshare [options] [command...]`; without a command it runs a shell. `-R` moves to the new root unless `-w` is given. */
+function unshare(args: string[], expanded: boolean[], stdin?: string, piped?: Piped): Layer[] {
+  let root = false
+  let wd: string | undefined
+  let i = 0
+  while (i < args.length) {
+    if (args[i] === "--") {
+      i++
+      break
+    }
+    const option = readOption(args, i, OPTION_SPECS.unshare)
+    if (!option) break
+    if (option.name === "-R" || option.name === "--root") root = true
+    if (option.name === "-w" || option.name === "--wd") wd = option.value ?? ""
+    i = option.next
+  }
+  const layers: Layer[] =
+    i < args.length
+      ? [{ label: "unshare", inner: { argv: args.slice(i), expanded: expanded.slice(i) } }]
+      : shell("unshare")([], [], stdin, piped)
+  return inDir(layers, wd ?? (root ? "/" : undefined))
+}
+
+/**
+ * `systemd-run [options] command...` runs the command in a transient unit: on another host with `-H`, in a container
+ * with `-M`, and in `/` (the home directory with `--user`) unless `--scope` or `--same-dir` keeps the directory.
+ * `--shell` runs a shell instead of a command.
+ */
+function systemdRun(args: string[], expanded: boolean[], stdin?: string, piped?: Piped): Layer[] {
+  const spec = OPTION_SPECS.systemdRun
+  let host: string | undefined
+  let same = false
+  let user = false
+  let runShell = false
+  let wd: string | null | undefined
+  let i = 0
+  while (i < args.length) {
+    if (args[i] === "--") {
+      i++
+      break
+    }
+    const option = readOption(args, i, spec)
+    if (!option) break
+    const names = optionNames(args[i]!, option, spec)
+    const value = option.value ?? ""
+    if (option.name === "-H" || option.name === "--host") host = sshHost(value)
+    // `.host` and an empty machine name are the local host.
+    if ((option.name === "-M" || option.name === "--machine") && !/^([^@]*@)?(\.host)?$/.test(value)) {
+      host = value.slice(value.indexOf("@") + 1)
+    }
+    if (["--scope", "-d", "--same-dir"].some((name) => names.includes(name))) same = true
+    if (names.includes("-S") || names.includes("--shell")) runShell = true
+    if (names.includes("--user")) user = true
+    if (option.name === "--working-directory") wd = value
+    if ((option.name === "-p" || option.name === "--property") && value.startsWith("WorkingDirectory=")) wd = null
+    i = option.next
+  }
+  let layers: Layer[]
+  if (i < args.length) {
+    const layer: Layer = { label: "systemd-run", inner: { argv: args.slice(i), expanded: expanded.slice(i) } }
+    if (host !== undefined) layer.host = host
+    layers = [layer]
+  } else if (runShell) {
+    return stdinLayers("systemd-run", stdin, piped, host)
+  } else {
+    return []
+  }
+  if (host !== undefined) return layers
+  return inDir(layers, wd !== undefined ? wd : same ? undefined : user ? null : "/")
+}
+
+/** `k3s` / `microk8s` run their bundled `kubectl` and other CLIs: `k3s kubectl delete ns x`. */
+function bundled(label: string, names: readonly string[]): Unwrapper {
+  return (args, expanded) => (names.includes(args[0] ?? "") ? [{ label, inner: { argv: args, expanded } }] : [])
 }
 
 /** `flock [options] file command...` or `flock [options] file -c command`; `flock fd` runs nothing. */
@@ -1592,7 +1704,9 @@ const WRAPPERS: Record<string, Unwrapper> = {
   xargs,
   eval: (args) => (args.length ? [{ label: "eval", inner: { script: args.join(" ") } }] : []),
   ssh,
-  kubectl,
+  ...Object.fromEntries(["kubectl", "oc", "kubecolor"].map((name) => [name, kubectl(name)])),
+  k3s: bundled("k3s", ["kubectl", "crictl", "ctr"]),
+  microk8s: bundled("microk8s", ["kubectl", "ctr", "helm"]),
   docker: containerExec("docker", OPTION_SPECS.docker, OPTION_SPECS.dockerExec),
   nerdctl: containerExec("nerdctl", OPTION_SPECS.nerdctl, OPTION_SPECS.nerdctlExec),
   podman: containerExec("podman", OPTION_SPECS.podman, OPTION_SPECS.podmanExec, new Set(["-l", "--latest", "--cidfile"])),
@@ -1604,6 +1718,10 @@ const WRAPPERS: Record<string, Unwrapper> = {
   "parallel-ssh": pssh("parallel-ssh"),
   clush,
   chroot,
+  nsenter,
+  unshare,
+  setpriv: optionsThen("setpriv", OPTION_SPECS.setpriv),
+  "systemd-run": systemdRun,
   flock,
   watch,
   parallel,
