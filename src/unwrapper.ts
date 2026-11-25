@@ -1791,6 +1791,9 @@ const WRAPPERS: Record<string, Unwrapper> = {
   unshare,
   ip,
   setpriv: optionsThen("setpriv", OPTION_SPECS.setpriv),
+  // Multi-call binaries run the applet named first; their own options (`--list`, `--install`, `--help`) run none.
+  busybox: optionsThen("busybox", OPTION_SPECS.nohup, () => true),
+  toybox: optionsThen("toybox", OPTION_SPECS.nohup, () => true),
   "systemd-run": systemdRun,
   flock,
   watch,

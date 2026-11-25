@@ -189,7 +189,7 @@ tar xzf daocloud-opencode-safety-policy-$VERSION.tgz -C ~/.config/opencode/safet
 - 每条规则的 `severity` 决定它在各模式下的处置，见[运行模式](#运行模式)。`examples` 列出了它应该命中和不应该命中的命令。
 - 拦截信息 `[safety-policy:<规则 ID>]` 中的规则 ID 就是规则的 `id`，可以在这些文件中搜到。想知道某条命令命中哪条规则，用 `/safety test <命令>`。
 - 以下几类保护写在代码中，不在 `rules/` 目录：
-  - `self-protect`：禁止修改插件、OpenCode 配置和规则文件，禁止读取 OpenCode Server 凭据和数据库，禁止调用本机 Server API。见 [`self-protect.ts`](src/rules/self-protect.ts) 和 [`server-api.ts`](src/rules/server-api.ts)
+  - `self-protect`：禁止修改插件、OpenCode 配置和规则文件，禁止读取 OpenCode Server 凭据和数据库，禁止调用本机 Server API，禁止启动自动批准权限或改写安全模式与配置的 OpenCode。见 [`self-protect.ts`](src/rules/self-protect.ts) 和 [`server-api.ts`](src/rules/server-api.ts)
   - `protected-endpoint-write`：配置了 `protectedEndpoints` 后，拦截发往这些端点的写请求。见 [`index.ts`](src/rules/index.ts)
   - `unknown-remote-command`：`strict` 下，不在只读白名单中的远端命令弹出审批
 
@@ -204,6 +204,7 @@ tar xzf daocloud-opencode-safety-policy-$VERSION.tgz -C ~/.config/opencode/safet
 
 - 插件与 Agent 以同一个 OS 用户运行。它能拦下误操作和常见的绕过写法，但挡不住刻意对抗的 Agent，比如在解释器代码里动态拼接命令。生产环境仍然需要远端最小权限凭据，如 Kubeconfig、BMC、UFM 的只读账号。
 - 模式切换的 RPC 经本机 Server API 暴露。插件拦截了读取 Server 密码和调用 Server API 的常见写法，但不能覆盖所有写法。需要硬保证时，使用 `OPENCODE_SAFETY_LOCK_MODE`。
+- `OPENCODE_SAFETY_LOCK_MODE` 只约束当前 Server 和继承其环境的进程。插件拒绝带 `--auto`（含 `--yolo`、`--dangerously-skip-permissions`）的 `opencode` 命令，也拒绝用前缀赋值改写安全模式、配置目录或数据库路径的 `opencode` 命令。先 `export` 变量再启动等写法仍然拦不住。
 - Linux 上插件通过 `/proc` 找到 Server 监听的端口，只拦截发往这些端口的 `/api` 请求。macOS 没有 `/proc`，插件会拦截发往本机任意端口的 `/api` 请求，`kubectl proxy`、Prometheus 等其他服务也不例外。
 - 任何项目都可以在自己的配置中写 `"plugins": ["-*"]`，让本插件在该项目中不加载，用户级安装也不例外。打开不可信的仓库前，先检查它的 `opencode.json` 和 `.opencode/`。需要强制启用插件的机器（如跳板机）可以用系统级部署，见设计文档 [8](docs/opencode-safety-policy-design.md#8-分发与部署方案适配-infra-integrate-场景) 的第 2 点。
 - 用户在 TUI 中直接输入的 `!命令` 不经过插件。

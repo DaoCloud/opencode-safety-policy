@@ -103,6 +103,8 @@ describe("wrappers and stdin", () => {
     "nsenter -t 1 -m rm -rf etc",
     "unshare -R /mnt rm -rf etc",
     "systemd-run rm -rf etc",
+    "busybox rm -rf /etc",
+    "kubectl exec pod -- toybox rm -rf /",
     "ip netns exec ns1 rm -rf /etc",
     "kubectl debug node/n1 -it --image=busybox -- chroot /host rm -rf /etc",
     "flock /tmp/l -c 'rm -rf /'",

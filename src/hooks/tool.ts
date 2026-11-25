@@ -32,7 +32,9 @@ interface BeforeEvent {
 type Enforced = { mode: Mode; loaded: Loaded }
 export type ShellInput = { command: string; workdir?: string }
 
-export const MARKER_TTL_MS = 60_000
+// `execute.after` removes a marker. The TTL only drops markers of calls that end without it (interrupted, or renamed
+// to a missing tool), so it must outlast any approval the shell tool waits for first, such as `external_directory`.
+export const MARKER_TTL_MS = 24 * 60 * 60_000
 const SUMMARY_MAX = 200
 
 /** A checked `shell` call: allowed, or to be approved through the built-in prompt. */

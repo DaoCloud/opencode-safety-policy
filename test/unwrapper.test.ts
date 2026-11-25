@@ -682,6 +682,8 @@ describe("namespace and service wrappers", () => {
     // iproute2 matches prefixes: `-n` is -netns, `-r` is -resolve, `net` is netns and `e` is exec.
     ["ip -n ns0 -r net e ns1 rm x", ["ip netns exec"]],
     ["ip -4 -rc 1024 -- vrf exec mgmt rm x", ["ip vrf exec"]],
+    ["busybox rm x", ["busybox"]],
+    ["/bin/toybox rm x", ["toybox"]],
   ])("%s", (input, wrapperChain) => {
     expect(only(input)).toMatchObject({ argv: ["rm", "x"], isRemote: false, wrapperChain })
   })
@@ -718,12 +720,19 @@ describe("namespace and service wrappers", () => {
     expect(only("systemd-run -S <<<'rm x'")).toMatchObject({ argv: ["rm", "x"], wrapperChain: ["systemd-run"] })
   })
 
-  test.each(["setpriv --dump", "systemd-run --user", "nsenter -t 1 -m", "ip netns exec ns1", "ip netns list", "ip ne show"])(
-    "%s is not unwrapped",
-    (input) => {
-      expect(only(input).wrapperChain).toEqual([])
-    },
-  )
+  test.each([
+    "setpriv --dump",
+    "systemd-run --user",
+    "nsenter -t 1 -m",
+    "ip netns exec ns1",
+    "ip netns list",
+    "ip ne show",
+    "busybox",
+    "busybox --list",
+    "busybox --install -s /bin",
+  ])("%s is not unwrapped", (input) => {
+    expect(only(input).wrapperChain).toEqual([])
+  })
 })
 
 describe("long option abbreviations", () => {

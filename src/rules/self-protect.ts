@@ -15,6 +15,9 @@
  * the `OPENCODE_DB` file (with their `-wal`, `-shm` and `-journal` files) and every `/proc/<pid>/environ`. A shell atom
  * is denied when a redirect or a local argument names one, read-only commands included; an argument with a glob is
  * matched like the shell would expand it.
+ *
+ * A local `opencode` is denied when it approves every permission request itself (`--auto` and its aliases) or when
+ * its prefix assignments change the safety mode, the configuration that loads this plugin or where it is read from.
  */
 
 import os from "node:os"
@@ -37,6 +40,9 @@ const SERVICE_FILE = /^service.*\.json/
 const DATABASE = /^opencode.*\.db(-wal|-shm|-journal)?$/
 const DATABASE_SUFFIXES = ["", "-wal", "-shm", "-journal"]
 const ENVIRON = /^\/proc\/[^/]+(\/task\/[^/]+)?\/environ$/
+// `packages/cli/src/commands/commands.ts`: `--yolo` and `--dangerously-skip-permissions` are hidden aliases of `--auto`.
+const AUTO_APPROVE = /^--(auto|yolo|dangerously-skip-permissions)(=|$)/
+const OPENCODE_ENV = /^(HOME|XDG_\w+|OPENCODE_(SAFETY_|CONFIG|CLI_CONFIG|DISABLE_PROJECT_CONFIG|DB|DISABLE_CHANNEL_DB)\w*)=/
 
 export interface ProtectedPaths {
   /** Protected with everything below them. */
@@ -116,6 +122,16 @@ export function isSecret(p: string, paths: ProtectedPaths): boolean {
 
 export function secretVerdict(target: string): Verdict {
   return { decision: "deny", ruleId: "self-protect", reason: `禁止读写 OpenCode Server 凭据与数据库（${target}）` }
+}
+
+/** The flag or assignment that makes a local `opencode` bypass approvals or this plugin. */
+export function nestedOpencode(atom: Atom): string | undefined {
+  if (atom.isRemote || atom.name !== "opencode") return undefined
+  return atom.argv.find((arg) => AUTO_APPROVE.test(arg)) ?? atom.assignments.find((word) => OPENCODE_ENV.test(word))
+}
+
+export function nestedOpencodeVerdict(target: string): Verdict {
+  return { decision: "deny", ruleId: "self-protect", reason: `禁止启动自动批准权限或改写安全模式与配置的 OpenCode（${target}）` }
 }
 
 /** The first Server credential or database file that `atom`, running in the local directory `dir`, names. */
