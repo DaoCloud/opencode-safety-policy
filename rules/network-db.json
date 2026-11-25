@@ -59,8 +59,14 @@
       ],
       "flags": ["-F", "--flush", "-X", "--delete-chain"],
       "examples": {
-        "match": ["iptables -F", "iptables -t nat -X", "ip6tables --flush INPUT"],
-        "ignore": ["iptables -nvL", "iptables -A INPUT -p tcp --dport 22 -j ACCEPT", "echo iptables -F"]
+        "match": ["iptables -F", "iptables -t nat -X", "ip6tables --flush INPUT", "ebtables --delete-ch FOO"],
+        "ignore": [
+          "iptables -nvL",
+          "iptables -A INPUT -p tcp --dport 22 -j ACCEPT",
+          "echo iptables -F",
+          "iptables --delete INPUT 1",
+          "iptables -AFORWARD -j DROP"
+        ]
       }
     },
     {

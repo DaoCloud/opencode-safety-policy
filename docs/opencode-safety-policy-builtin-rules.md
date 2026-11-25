@@ -193,7 +193,7 @@ cd /tmp && bun /path/to/opencode-safety-policy/cli.ts test "kubectl -n prod dele
 
 | 情况 | 修改 | 测试 |
 |---|---|---|
-| 新 CLI 的带值全局选项会遮住子命令，或者需要像 `kubectl` 一样只认第一个位置参数、只认完整的长选项 | 在 `src/cli-options.ts` 的 `OPTION_SPECS` 中增加选项表，登记到 `src/rules/matcher.ts` 的 `COMMAND_SPECS`。只读白名单也要跳过它的全局选项时，登记到 `src/rules/ssh-policy.ts` 的 `SPECS` | `test/rules.test.ts` |
+| 新 CLI 的带值全局选项会遮住子命令，或者需要像 `kubectl` 一样只认第一个位置参数、只认完整的长选项，或者长选项名互为前缀（如 `iptables` 的 `--delete` 与 `--delete-chain`） | 在 `src/cli-options.ts` 的 `OPTION_SPECS` 中增加选项表，登记到 `src/rules/matcher.ts` 的 `COMMAND_SPECS`。接受缩写的 CLI（getopt_long 等）在 `spec()` 中传 `flags` 列全无值长选项，表中的完整名就不会被当作别的选项的缩写；只认完整名的 CLI（pflag 等）不传 `flags`。只读白名单也要跳过它的全局选项时，登记到 `src/rules/ssh-policy.ts` 的 `SPECS` | `test/rules.test.ts` |
 | 新的外壳命令（类似 `sudo`、`timeout`），或新的远端执行方式（类似 `ssh`、`pdsh`） | `src/unwrapper.ts` 的 `WRAPPERS`，选项表放在 `OPTION_SPECS` | `test/unwrapper.test.ts` |
 | 新的 HTTP 客户端，或解释器代码中新的 HTTP 调用写法 | `src/http-extractor.ts`、`src/script-scanner.ts` | `test/http-script.test.ts` |
 | 新的规则字段 | `src/types.ts` 的 `Rule`，`src/rules/loader.ts` 的 `RULE_KEYS` 与校验，`src/rules/matcher.ts` | `test/rules.test.ts` |
@@ -205,8 +205,8 @@ cd /tmp && bun /path/to/opencode-safety-policy/cli.ts test "kubectl -n prod dele
 - **JSON 双重转义**：正则的 `\S` 在 JSON 中写作 `"\\S"`，`\.` 写作 `"\\."`。示例中的引号写作 `\"`。
 - **路径已展开**：本机路径参数在匹配前已展开为绝对路径，`pattern` 要按绝对路径写。测试中的相对路径展开到 `/ocsp-examples/work/project` 下。
 - **不带 `command` 的 `pattern`**：作用于每一条原子命令，必须用 `^` 锚定命令名，如 `mkfs` 规则的 `"^(mkfs(\\.[\\w-]+)?|mke2fs|mkswap|mkdosfs|mkntfs)( |$)"`。它不看 heredoc 正文，也不匹配工具调用。
-- **子命令位置**：除 `kubectl`、`docker` 外，`subcommands` 的第一个词可以出现在任意位置参数上，带值选项的值也算位置参数。`deployctl logs --app release` 会命中 `["release"]`。误报严重时，给这个 CLI 增加选项表（第 5 节），或改用 `pattern`。
-- **长选项前缀**：除 `kubectl`、`docker` 要求完整名称外，`flags` 中的长选项也匹配它的任何前缀，这个前缀可能正好是另一个选项。例如 `iptables --delete INPUT 1` 只删除一条规则，但 `--delete` 是 `--delete-chain` 的前缀，所以命中 `iptables-flush`。选项名互为前缀时，用 `cli.ts test` 检查相邻的选项。`pattern` 不识别缩写，在正则中写长选项要自己覆盖缩写形态，能用 `flags` 时优先用 `flags`。
+- **子命令位置**：除内置了选项表的 `kubectl`、`docker`、`iptables` 系列外，`subcommands` 的第一个词可以出现在任意位置参数上，带值选项的值也算位置参数。`deployctl logs --app release` 会命中 `["release"]`。误报严重时，给这个 CLI 增加选项表（第 5 节），或改用 `pattern`。
+- **长选项前缀**：`flags` 中的长选项也匹配它的任何前缀，这个前缀可能正好是另一个选项。例如 `flags` 写 `["--delete-all"]` 时，`deployctl --delete app1` 也会命中。`kubectl`、`docker` 只认完整名称；`iptables` 系列按选项表识别，`iptables --delete INPUT 1` 不命中 `--delete-chain`。其他 CLI 的选项名互为前缀时，用 `cli.ts test` 检查相邻的选项，误报严重时增加选项表（第 5 节）。`pattern` 不识别缩写，在正则中写长选项要自己覆盖缩写形态，能用 `flags` 时优先用 `flags`。
 - **heredoc 正文**：带 `command` 的规则会把 heredoc 正文接在参数后再匹配一次。这让 `sql-drop` 能看到 `psql <<SQL` 中的语句，但也意味着正文中的文字可能引起误报。
 - **大小写**：命令名区分大小写。SQL 关键字这类需要忽略大小写的内容，用 `(?i:...)`，如 `sql-drop`。
 - **正则语法**：插件运行在 Bun 上，正则按 JavaScript 语法编译，支持后行断言 `(?<!...)` 和局部修饰符 `(?i:...)`。

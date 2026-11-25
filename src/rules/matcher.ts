@@ -8,8 +8,8 @@
  *   options (`helm -n prod uninstall`) would otherwise hide the subcommand. The remaining words must follow in order,
  *   not necessarily adjacent, so that `kubectl delete --grace-period 0 namespace x` matches `delete namespace`;
  * - `flags`: one flag is present. `-f` also matches inside a short cluster such as `-rf`, `--force` also matches
- *   `--force=true` and, for CLIs without an option table, an abbreviation such as `--for`, and `--replicas=0` also
- *   matches `--replicas 0`;
+ *   `--force=true` and an abbreviation such as `--for` (not for CLIs whose option table needs exact names, nor when
+ *   the abbreviation is an option of its own in the table), and `--replicas=0` also matches `--replicas 0`;
  * - `pattern`: the regex matches `name arg1 arg2 ...`. For rules with `command`, inline stdin (heredoc / here-string)
  *   is input to that command, so the regex is also tried on `name arg1 ... stdin` with stdin whitespace collapsed
  *   (`psql <<SQL DROP TABLE x`). Rules without `command` ignore stdin so that `cat <<EOF > x.sh` is not matched;
@@ -59,6 +59,8 @@ export interface CompiledRule {
 const COMMAND_SPECS = new Map<string, OptionSpec>([
   ["kubectl", OPTION_SPECS.kubectl],
   ["docker", OPTION_SPECS.docker],
+  ...["iptables", "ip6tables", "iptables-legacy", "ip6tables-legacy", "iptables-nft", "ip6tables-nft", "ebtables", "arptables"]
+    .map((name): [string, OptionSpec] => [name, OPTION_SPECS.iptables]),
 ])
 
 export const NO_OPTIONS: OptionSpec = { shortValue: "", longValue: new Set() }
@@ -144,13 +146,16 @@ function hasFlag(argv: string[], flag: string, spec: OptionSpec | undefined) {
     const name = eq > 0 ? flag.slice(2, eq) : flag.slice(2)
     const value = eq > 0 ? flag.slice(eq + 1) : undefined
     // A unique prefix of a long option works for most parsers (getopt_long, argparse) but not for CLIs with an
-    // option table, which need exact names.
+    // option table, which need exact names. A known name stands for itself (`iptables --delete` is not
+    // `--delete-chain`).
     const exact = spec !== undefined && spec.longNames === undefined
     return args.some((arg, i) => {
       if (!arg.startsWith("--")) return false
       const at = arg.indexOf("=")
       const given = at < 0 ? arg.slice(2) : arg.slice(2, at)
-      if (given !== name && (exact || given === "" || !name.startsWith(given))) return false
+      if (given !== name && (exact || given === "" || !name.startsWith(given) || spec?.longNames?.includes(given))) {
+        return false
+      }
       if (value === undefined) return true
       return at < 0 ? args[i + 1] === value : arg.slice(at + 1) === value
     })

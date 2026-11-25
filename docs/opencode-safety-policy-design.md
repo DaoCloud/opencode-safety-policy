@@ -337,10 +337,10 @@
 - 规则文件格式为 `{ "rules": [ <规则>, ... ] }`。扫描内置目录时，没有 `rules` 字段的文件（如 `ssh-readonly.json`）会被跳过。规则含未知字段、非法 `severity`、无法编译的正则或重复 `id` 时，加载直接报错，并指明来源文件和 `id`。
 - 匹配语义（同一条规则的各部分须同时满足）：
   - `command` 可以是字符串或数组，与归一化后的命令名比较。
-  - `subcommands` 中任一项命中即可，多词项（如 `"delete namespace"`）的后续词按顺序出现即可，不要求相邻。对有带值选项表的 CLI（`kubectl`、`docker`），首词必须是第一个位置参数。其他 CLI 的首词可以出现在任意位置参数上，避免未知的带值选项（如 `helm -n prod uninstall`）遮住子命令。
+  - `subcommands` 中任一项命中即可，多词项（如 `"delete namespace"`）的后续词按顺序出现即可，不要求相邻。对有带值选项表的 CLI（`kubectl`、`docker`、`iptables` 系列），首词必须是第一个位置参数。其他 CLI 的首词可以出现在任意位置参数上，避免未知的带值选项（如 `helm -n prod uninstall`）遮住子命令。
   - `flags` 中任一项命中即可。`-f` 也匹配短选项簇（如 `-rf`），`--force` 也匹配 `--force=…`，`--replicas=0` 也匹配 `--replicas 0`。`--` 之后的参数不参与匹配。
-    - 长选项的唯一前缀也算命中（`iptables --flu` 命中 `--flush`），因为 getopt_long、argparse 等解析器都接受缩写。有选项表的 CLI（`kubectl`、`docker`）只认精确名。
-    - 这是 fail-closed 取舍：前缀可能同时属于别的选项，如 `iptables --delete INPUT 1` 也会命中 `--delete-chain`。
+    - 长选项的唯一前缀也算命中（`iptables --flu` 命中 `--flush`），因为 getopt_long、argparse 等解析器都接受缩写。pflag CLI（`kubectl`、`docker`）只认精确名。有 getopt_long 选项表的 CLI（`iptables` 系列）中，表里的完整选项名只代表自己，`iptables --delete INPUT 1` 不命中 `--delete-chain`；短选项簇在带值字母处截止，`iptables -AFORWARD` 不命中 `-F`。
+    - 这是 fail-closed 取舍：没有选项表的 CLI，前缀可能正好是另一个选项，如 `flags` 为 `["--delete-all"]` 时 `deployctl --delete app1` 也会命中。
     - `pattern` 正则按字面匹配，不识别缩写。在正则里写长选项的规则需自行覆盖缩写形态。
   - `pattern` 作用于 `命令名 参数1 参数2 …`。本机路径参数已展开为绝对路径，经过根目录下符号链接的路径还会以链接名再匹配一次（见 3.1 Stage 1）。带 `command` 的规则还会把 heredoc / here-string 正文（空白折叠为单个空格）接在参数后再试一次，如 `psql <<SQL DROP TABLE x`。不带 `command` 的规则不看 stdin，避免 `cat <<EOF > x.sh` 写脚本时误报。
   - `scope` 为 `local` / `remote` 时，只匹配本机或远端原子命令。

@@ -175,6 +175,15 @@ describe("matchRule", () => {
     expect(matches({ command: "kubectl", flags: ["--force"] }, "kubectl delete pod x --for")).toBe(false)
   })
 
+  test("a long name of the option table is not a prefix of a longer one", () => {
+    const chain = { command: "iptables", flags: ["--delete-chain"] }
+    expect(matches(chain, "iptables --delete INPUT 1")).toBe(false)
+    expect(matches(chain, "iptables --delete=INPUT 1")).toBe(false)
+    expect(matches(chain, "iptables --delete-ch X")).toBe(true)
+    expect(matches({ command: "iptables", flags: ["-F"] }, "iptables -AFORWARD -j DROP")).toBe(false)
+    expect(matches({ command: "iptables", flags: ["-F"] }, "iptables -vF")).toBe(true)
+  })
+
   test("--name=value flags also match the separated form", () => {
     const zero = { command: "kubectl", flags: ["--replicas=0"] }
     expect(matches(zero, "kubectl scale --replicas=0 deploy/x")).toBe(true)

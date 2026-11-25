@@ -274,6 +274,41 @@ export const OPTION_SPECS = {
     ],
   }),
   ipmitool: spec("AbBCdDefHIklLmNoOpPRStTUyz"),
+  // iptables 1.8 (`IPT_OPTSTRING`, `original_opts`). `ebtables` and `arptables` share the command options. An optional
+  // value may also be the next argument unless it starts with `-` or `!` (`xs_has_arg`).
+  iptables: spec(
+    "ACDEIMNPRcdijopstgm",
+    [
+      "append",
+      "delete",
+      "check",
+      "insert",
+      "replace",
+      "new-chain",
+      "rename-chain",
+      "policy",
+      "source",
+      "destination",
+      "src",
+      "dst",
+      "protocol",
+      "in-interface",
+      "jump",
+      "table",
+      "match",
+      "out-interface",
+      "modprobe",
+      "set-counters",
+      "goto",
+    ],
+    {
+      optional: Object.fromEntries(
+        ["L", "list", "S", "list-rules", "F", "flush", "Z", "zero", "X", "delete-chain", "w", "wait", "W", "wait-interval"]
+          .map((name) => [name.length === 1 ? `-${name}` : `--${name}`, /^(?![-!])/]),
+      ),
+      flags: ["numeric", "verbose", "exact", "fragments", "version", "help", "line-numbers", "ipv4", "ipv6"],
+    },
+  ),
   shell: spec("", ["rcfile", "init-file"]),
   // Global options plus the value-taking options of `kubectl exec`.
   kubectl: spec("nsvcf", [

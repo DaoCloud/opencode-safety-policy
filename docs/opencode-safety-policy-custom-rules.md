@@ -182,7 +182,7 @@ OpenCode 的自动审批会放行 `ask`，但不会放行 `deny`。无人值守�
 
 - 以 `-` 开头的参数会被跳过。`nico-cli --region bj node reset n1` 命中 `node reset`。
 - 多词项的各个词在位置参数中按顺序出现即可，不要求相邻。
-- `kubectl` 和 `docker` 的第一个词必须是第一个位置参数，插件认识它们的全局选项。其他命令的第一个词可以出现在任意位置参数上。这样未知的带值选项（如 `--region bj`）遮不住子命令，代价是可能误报：
+- 插件内置了选项表的命令（`kubectl`、`docker`、`iptables` 系列），第一个词必须是第一个位置参数。其他命令的第一个词可以出现在任意位置参数上。这样未知的带值选项（如 `--region bj`）遮不住子命令，代价是可能误报：
 
   | 命令 | `subcommands` | 结果 |
   |---|---|---|
@@ -207,7 +207,8 @@ OpenCode 的自动审批会放行 `ask`，但不会放行 `deny`。无人值守�
 | `-destroy` 等其他形式 | 只命中完全相同的参数 |
 
 - `--` 之后的参数不参与匹配。`deployctl release app -- -f` 不命中 `-f`。
-- 长选项缩写是 fail-closed 的取舍。前缀可能同时属于别的选项，如 `iptables --delete INPUT 1` 也会命中 `--delete-chain`。`kubectl`、`docker` 只认完整的选项名。
+- 长选项缩写是 fail-closed 的取舍。前缀可能正好是另一个选项：`flags` 写 `["--delete-all"]` 时，`deployctl --delete app1` 也会命中。
+- 插件内置了选项表的命令按表识别：`kubectl`、`docker` 只认完整的选项名；`iptables` 系列接受缩写，但表中的完整选项名只代表自己，`iptables --delete INPUT 1` 不会命中 `--delete-chain`。
 
 ### 4.7 `pattern`
 
