@@ -41,7 +41,7 @@
 
 ### 在线安装
 
-在用户级或项目级的配置文件中加入：
+在用户级( `~/.config/opencode/opencode.json` )或项目级的配置文件( `opencode.json`，或 `.opencode/opencode.json` )中加入：
 
 ```json
 {
