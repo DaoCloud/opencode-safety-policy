@@ -135,7 +135,7 @@ tar xzf daocloud-opencode-safety-policy-$VERSION.tgz -C ~/.config/opencode/safet
 
 用 `/safety` 不带 `--ttl` 切换过之后，第 3、4 项不再生效，之后只能再用 `/safety` 切换，或者用第 1 项锁定。读取模式状态失败时，插件按 `strict` 处理。上面两个环境变量的值非法时也按 `strict` 处理。
 
-## 配置
+## opencode 配置
 
 `options` 写在[安装](#安装)时注册插件的配置文件中，放在本插件的条目里，与 `package` 并列。例如在用户级的 `~/.config/opencode/opencode.json` 中：
 
