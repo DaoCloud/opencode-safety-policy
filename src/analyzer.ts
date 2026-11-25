@@ -189,8 +189,11 @@ function expandAtoms(atoms: Atom[], dirs: Dir[], scope: Scope): Entry[] {
     const atomDirs = (atom.chdir ?? []).reduce(changeDir(home), dirs)
     if (atom.isRemote) {
       if (!atom.prescan) recordWrites(atom, [...dirs, ...atomDirs], scope)
-      const candidate = withHttp({ input: { ...base, argv: atom.argv }, guessed: false }, atom)
-      return [{ atom, candidates: [candidate], dirs: known(dirs) }]
+      // The host form goes first, so that a tie reports the rule for the host path.
+      const mapped = atom.hostRoot === undefined ? undefined : fromHostRoot(atom.argv, atom.hostRoot)
+      const argvs = mapped ? [mapped, atom.argv] : [atom.argv]
+      const candidates = argvs.map((argv) => withHttp({ input: { ...base, argv }, guessed: false }, atom))
+      return [{ atom, candidates, dirs: known(dirs) }]
     }
     const at = (dir: string, guessed: boolean): Candidate[] => {
       const { argv, aliased } = expandPathArgs(atom.argv, atom.expanded, dir, home)
@@ -214,6 +217,22 @@ function expandAtoms(atoms: Atom[], dirs: Dir[], scope: Scope): Entry[] {
     if (target !== undefined) addDirs(dirs, changeDir(home)(atomDirs, target))
     return entries
   })
+}
+
+/**
+ * `argv` with paths under `root`, where the root filesystem of the host is mounted, written as host paths
+ * (`/host/etc` → `/etc`, also in `of=/host/dev/sda`); `undefined` when no path is under `root`.
+ */
+function fromHostRoot(argv: string[], root: string): string[] | undefined {
+  let changed = false
+  const mapped = argv.map((arg) => {
+    const eq = arg.startsWith("/") ? -1 : arg.indexOf("=")
+    const value = arg.slice(eq + 1)
+    if (value !== root && !value.startsWith(`${root}/`)) return arg
+    changed = true
+    return arg.slice(0, eq + 1) + (value.slice(root.length) || "/")
+  })
+  return changed ? mapped : undefined
 }
 
 /** Adds the HTTP requests of `atom`; files named by the command are read with `read`. */

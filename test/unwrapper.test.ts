@@ -1068,10 +1068,22 @@ describe("container exec", () => {
   })
 
   test.each([
+    ["kubectl debug node/n1 -- rm -rf /data", "/host"],
+    ["oc debug Nodes/n1 -- rm -rf /data", "/host"],
+    ["kubectl debug api-0 -- rm -rf /data", undefined],
+    ["kubectl debug node/n1 -- ssh n2 rm -rf /data", undefined],
+  ])("%s mounts the host at %s", (input, hostRoot) => {
+    const result = atoms(input)
+    expect(result).toHaveLength(1)
+    expect(result[0]!.hostRoot).toBe(hostRoot)
+  })
+
+  test.each([
     ["k3s kubectl delete ns prod", ["k3s"]],
     ["k3s crictl rmi -a", ["k3s"]],
     ["microk8s ctr images rm x", ["microk8s"]],
     ["microk8s helm uninstall x", ["microk8s"]],
+    ["microk8s helm3 uninstall x", ["microk8s"]],
   ])("%s runs the bundled tool", (input, wrapperChain) => {
     expect(only(input)).toMatchObject({ argv: input.split(" ").slice(1), isRemote: false, wrapperChain })
   })

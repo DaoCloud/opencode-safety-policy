@@ -63,6 +63,14 @@ describe("working directory", () => {
     expect(verdict("cd $X && rm -rf build")).toEqual(["ask", "rm-local"])
   })
 
+  test.each([
+    ["find . -name '*.tmp' -delete", {}, "find-delete-local"],
+    ["find ~ -name '*.log' -delete", { home: "/home/alice" }, "find-delete-system-path"],
+    ["cd / && find etc -delete", {}, "find-delete-system-path"],
+  ])("%s %o is judged by its canonical start path", (command, options, ruleId) => {
+    expect(verdict(command, options)[1]).toBe(ruleId)
+  })
+
   test("too many directories fall back to an unknown one", () => {
     const cds = Array.from({ length: 8 }, (_, i) => `cd /ocsp-analyzer/d${i}`).join("; ")
     expect(verdict(`${cds}; rm -rf etc`)).toEqual(["ask", "rm-system-path"])
@@ -580,6 +588,27 @@ describe("remote commands", () => {
   ])("rules win over the allowlist: %s", (command, ruleId) => {
     expect(verdict(command)).toEqual(["deny", ruleId])
   })
+
+  test("ip a is read-only, but adding an address is not", () => {
+    expect(verdict("ssh node1 ip -br a")).toEqual(["allow", undefined])
+    expect(verdict("ssh node1 ip a add 10.0.0.2/24 dev eth0")).toEqual(["ask", "ip-addr-change"])
+  })
+
+  test.each([
+    ["kubectl debug node/n1 -it --image=busybox -- rm -rf /host/etc", "rm-system-path"],
+    ["oc debug node/n1 -- sh -c 'rm -rf /host/var/lib/etcd'", "rm-k8s-state"],
+    ["kubectl debug node/n1 -- rm -rf /host", "rm-system-path"],
+    ["kubectl debug node/n1 -- dd if=/dev/zero of=/host/dev/sda", "dd-to-device"],
+  ])("paths under /host of a node debug pod are host paths: %s", (command, ruleId) => {
+    expect(verdict(command, { mode: "relaxed" })).toEqual(["deny", ruleId])
+  })
+
+  test.each(["kubectl debug api-0 -- rm -rf /host/etc", "kubectl debug node/n1 -- ssh n2 rm -rf /host/etc"])(
+    "/host is not a host mount in %s",
+    (command) => {
+      expect(verdict(command, { mode: "relaxed" })).toEqual(["ask", "remote-rm"])
+    },
+  )
 
   test("sshReadOnlyAllowlist adds commands", () => {
     expect(verdict("ssh node1 ibdiagnet")).toEqual(["ask", "unknown-remote-command"])

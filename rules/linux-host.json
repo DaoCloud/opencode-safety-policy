@@ -1,5 +1,5 @@
 {
-  "description": "适用对象：本机与远端的 Linux 主机。覆盖文件删除（含 Kubernetes 与容器运行时状态目录）、磁盘与分区（mkfs、dd、fdisk、parted、wipefs、blkdiscard、nvme、LVM、mdadm、ZFS）、关机重启、systemd 服务（含网络服务）、软件包卸载、内核模块卸载、进程、用户、crontab 与日志清理",
+  "description": "适用对象：本机与远端的 Linux 主机。覆盖文件删除（含 Kubernetes 与容器运行时状态目录、find 批量删除、git worktree）、磁盘与分区（mkfs、dd、fdisk、parted、wipefs、blkdiscard、nvme、LVM、mdadm、ZFS）、关机重启、systemd 服务（含网络服务）、软件包卸载、内核模块卸载、进程、用户、crontab 与日志清理",
   "rules": [
     {
       "id": "rm-system-path",
@@ -43,7 +43,7 @@
     {
       "id": "rm-recursive-variable",
       "severity": "high",
-      "reason": "禁止递归删除以变量开头的整段路径（变量为空时会删除根目录）",
+      "reason": "禁止递归删除以变量开头的整段路径（删除目标无法确定，变量为空时 $X/ 会变成根目录）",
       "command": "rm",
       "flags": ["-r", "-R", "--recursive"],
       "pattern": "(^| )\\$(\\w+|\\{\\w+\\})(/\\*?)?( |$)",
@@ -85,14 +85,57 @@
       }
     },
     {
+      "id": "find-delete-system-path",
+      "severity": "high",
+      "reason": "禁止通过 find 删除根目录、系统目录、主目录或由变量决定的目录下的文件",
+      "command": "find",
+      "pattern": "^find( -[HLP]+| -D \\S+| -O\\d*)*( [^-(!),\\s]\\S*)*? (/(\\*|(etc|var|usr|boot|home|data|root|bin|sbin|lib|lib32|lib64|opt|srv|dev|proc|sys|run|mnt|var/lib|usr/local|var/lib/(etcd(/member)?|kubelet|containerd|docker|cni|calico|rancher)|etc/(kubernetes(/pki|/manifests)?|cni|containerd)|home/[^/\\s]+|Users(/[^/\\s]+)?)(/\\*?)?)?|~[^/\\s]*(/\\*?)?|\\$(\\w+|\\{\\w+\\})(/\\*?)?)(?= |$)(?=.* (-delete|-(exec|execdir|ok|okdir) (\\S*/)?(rm|rmdir|unlink|shred))( |$))",
+      "examples": {
+        "match": [
+          "find / -name core -delete",
+          "find /etc -name '*.bak' -exec rm -f {} +",
+          "ssh n1 find /var/lib/etcd -type f -delete",
+          "cd /usr && find . -delete",
+          "ssh n1 'find ~ -name \"*.log\" -delete'",
+          "find ./a $DIR -delete"
+        ],
+        "ignore": ["find /var/log -name '*.gz' -delete", "find . -name '*.tmp' -delete", "find /etc -name '*.conf'", "echo find / -delete"]
+      }
+    },
+    {
       "id": "find-delete",
       "severity": "high",
-      "reason": "禁止通过 find 批量删除文件",
+      "reason": "禁止在远端主机上通过 find 批量删除文件",
       "command": "find",
       "pattern": "(^| )(-delete|-(exec|execdir|ok|okdir) (\\S*/)?(rm|rmdir|unlink|shred))( |$)",
+      "scope": "remote",
       "examples": {
-        "match": ["find /var/log -name '*.gz' -delete", "find . -type f -exec rm -f {} +", "find /data -execdir /bin/rm {} ;"],
-        "ignore": ["find . -name '*.log'", "find . -exec grep -l TODO {} +", "echo find . -delete"]
+        "match": ["ssh n1 find /var/log -name '*.gz' -delete", "kubectl exec api-0 -- find /data -execdir /bin/rm {} ;"],
+        "ignore": ["find . -type f -exec rm -f {} +", "ssh n1 find /var/log -name '*.gz'", "echo ssh n1 find . -delete"]
+      }
+    },
+    {
+      "id": "find-delete-local",
+      "severity": "medium",
+      "reason": "通过 find 删除本机文件需要确认",
+      "command": "find",
+      "pattern": "(^| )(-delete|-(exec|execdir|ok|okdir) (\\S*/)?(rm|rmdir|unlink|shred))( |$)",
+      "scope": "local",
+      "examples": {
+        "match": ["find . -name '*.tmp' -delete", "find build -type f -exec rm -f {} +"],
+        "ignore": ["ssh n1 find /tmp -delete", "find . -exec grep -l TODO {} +", "echo find . -delete"]
+      }
+    },
+    {
+      "id": "git-worktree-remove-force",
+      "severity": "high",
+      "reason": "禁止强制删除 git worktree，未提交的修改和未跟踪文件会丢失",
+      "command": "git",
+      "subcommands": ["worktree remove"],
+      "flags": ["-f", "--force"],
+      "examples": {
+        "match": ["git worktree remove --force ../wt", "git -C /repo worktree remove -f -f ../wt"],
+        "ignore": ["git worktree remove ../wt", "git worktree add -f ../wt main", "echo git worktree remove -f ../wt"]
       }
     },
     {
@@ -166,10 +209,15 @@
       "severity": "critical",
       "reason": "禁止用 dd 写入块设备",
       "command": "dd",
-      "pattern": "(^| )of=/dev/(?!(null|zero|full|tty|stdout|stderr)( |$))",
+      "pattern": "(^| )of=/dev/(?!(null|zero|full|tty|stdout|stderr)( |$)|shm/(?!\\S*\\.\\.))",
       "examples": {
-        "match": ["dd if=/dev/zero of=/dev/sdb bs=1M", "dd if=image.iso of=/dev/nvme0n1 status=progress"],
-        "ignore": ["dd if=/dev/zero of=/tmp/file bs=1M count=10", "dd if=/dev/sda of=/dev/null bs=1M count=1", "echo dd of=/dev/sda"]
+        "match": ["dd if=/dev/zero of=/dev/sdb bs=1M", "dd if=image.iso of=/dev/nvme0n1 status=progress", "ssh n1 dd if=x of=/dev/shm/../sda"],
+        "ignore": [
+          "dd if=/dev/zero of=/tmp/file bs=1M count=10",
+          "dd if=/dev/sda of=/dev/null bs=1M count=1",
+          "dd if=/dev/zero of=/dev/shm/test bs=1M count=100",
+          "echo dd of=/dev/sda"
+        ]
       }
     },
     {
@@ -209,9 +257,10 @@
       "severity": "high",
       "reason": "禁止重启或关闭主机",
       "command": ["reboot", "shutdown", "poweroff", "halt"],
+      "pattern": "^(?!shutdown -c( [^-\\s]\\S*)*$)",
       "examples": {
-        "match": ["reboot", "sudo shutdown -h now", "ssh node1 poweroff"],
-        "ignore": ["last reboot", "echo reboot", "systemctl status reboot.target"]
+        "match": ["reboot", "sudo shutdown -h now", "ssh node1 poweroff", "shutdown -c -r now"],
+        "ignore": ["shutdown -c", "ssh node1 shutdown -c 'maintenance cancelled'", "last reboot", "echo reboot", "systemctl status reboot.target"]
       }
     },
     {
@@ -272,6 +321,28 @@
       "examples": {
         "match": ["apt-get purge -y openssh-server", "yum remove -y kernel", "zypper rm vim"],
         "ignore": ["apt-get install -y curl", "dnf list installed", "echo apt-get remove -y vim"]
+      }
+    },
+    {
+      "id": "rpm-erase",
+      "severity": "high",
+      "reason": "禁止卸载系统软件包",
+      "command": "rpm",
+      "flags": ["-e", "--erase"],
+      "examples": {
+        "match": ["rpm -e kernel-5.14.0", "ssh n1 rpm -e --nodeps openssh-server"],
+        "ignore": ["rpm -qa", "rpm -ivh pkg.rpm", "echo rpm -e kernel"]
+      }
+    },
+    {
+      "id": "dpkg-remove",
+      "severity": "high",
+      "reason": "禁止卸载系统软件包",
+      "command": "dpkg",
+      "flags": ["-r", "--remove", "-P", "--purge"],
+      "examples": {
+        "match": ["dpkg -r openssh-server", "sudo dpkg --purge linux-image-6.8.0-31-generic"],
+        "ignore": ["dpkg -l", "dpkg -i pkg.deb", "echo dpkg -P openssh-server"]
       }
     },
     {

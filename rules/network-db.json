@@ -35,6 +35,17 @@
       }
     },
     {
+      "id": "ip-addr-change",
+      "severity": "medium",
+      "reason": "添加或修改 IP 地址需要确认",
+      "command": "ip",
+      "pattern": "(^| )(a|ad|add|addr|addre|addres|address) (a|ad|add|c|ch|cha|chan|chang|change|chg|r|re|rep|repl|repla|replac|replace|res|rest|resto|restor|restore)( |$)",
+      "examples": {
+        "match": ["ip addr add 10.0.0.2/24 dev eth0", "ssh n1 ip a replace 10.0.0.2/24 dev eth0", "ip -6 address change 2001:db8::2/64 dev eth0"],
+        "ignore": ["ip a", "ip -br addr show dev eth0", "echo ip addr add 10.0.0.2/24 dev eth0"]
+      }
+    },
+    {
       "id": "ifdown",
       "severity": "high",
       "reason": "禁止关闭网络接口",

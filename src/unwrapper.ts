@@ -42,6 +42,8 @@ export interface Atom {
   /** True inside `ssh`, `kubectl exec` and `docker exec`: paths refer to another filesystem. */
   isRemote: boolean
   targetHost?: string
+  /** Where the root filesystem of the target host is mounted, such as `/host` in `kubectl debug node/x`. */
+  hostRoot?: string
   /** Wrappers from outermost to innermost, e.g. `["ssh", "sudo", "bash -c"]`. */
   wrapperChain: string[]
   /** The tokenized command this atom comes from (redirects, connector). */
@@ -90,6 +92,7 @@ interface Context {
   isRemote: boolean
   localCommands: Command[]
   targetHost?: string
+  hostRoot?: string
   wrapperChain: string[]
   depth: number
   stdin?: string
@@ -113,6 +116,8 @@ interface Layer {
   inner: Inner
   /** Switches to a remote context on this host. */
   host?: string
+  /** The root filesystem of `host` is mounted at this path in the inner context. */
+  hostRoot?: string
   /** The wrapper consumes stdin (or detaches it), so inner commands do not inherit it. */
   readsStdin?: boolean
   /** The inner command runs in this directory; `null` when it is unknown statically. */
@@ -441,6 +446,7 @@ function atomBase(context: Context, command: Command): Atom {
     localCommands: context.localCommands,
   }
   if (context.targetHost !== undefined) atom.targetHost = context.targetHost
+  if (context.hostRoot !== undefined) atom.hostRoot = context.hostRoot
   if (context.stdin !== undefined) atom.stdin = context.stdin
   if (context.piped) atom.piped = true
   if (context.chdir) atom.chdir = context.chdir
@@ -484,6 +490,8 @@ function walkArgv(
     if (context.prescan) next.prescan = true
     const host = layer.host ?? context.targetHost
     if (host !== undefined) next.targetHost = host
+    const hostRoot = layer.host !== undefined ? layer.hostRoot : context.hostRoot
+    if (hostRoot !== undefined) next.hostRoot = hostRoot
     if (!layer.readsStdin) {
       if (context.stdin !== undefined) next.stdin = context.stdin
       if (context.piped) next.piped = context.piped
@@ -811,10 +819,14 @@ function kubectl(name: string): Unwrapper {
       else positionals.push(i++)
     }
     const [sub, target, command] = positionals
-    // `kubectl debug target... -- command` runs in a debug container of a pod, or on a node (`node/x`).
+    // `kubectl debug target... -- command` runs in a debug container of a pod, or on a node (`node/x`), where the
+    // root filesystem of the node is mounted at `/host`.
     if (sub !== undefined && args[sub] === "debug" && target !== undefined && i + 1 < args.length) {
-      const host = positionals.slice(1).map((k) => args[k]).join(",")
-      return [{ label: `${name} debug`, host, inner: { argv: args.slice(i + 1), expanded: expanded.slice(i + 1) } }]
+      const targets = positionals.slice(1).map((k) => args[k]!)
+      const inner = { argv: args.slice(i + 1), expanded: expanded.slice(i + 1) }
+      const layer: Layer = { label: `${name} debug`, host: targets.join(","), inner }
+      if (targets.some((arg) => /^(nodes?|no)\//i.test(arg))) layer.hostRoot = "/host"
+      return [layer]
     }
     if (sub === undefined || args[sub] !== "exec" || target === undefined) return []
     const start = i < args.length ? i + 1 : command
@@ -1706,7 +1718,7 @@ const WRAPPERS: Record<string, Unwrapper> = {
   ssh,
   ...Object.fromEntries(["kubectl", "oc", "kubecolor"].map((name) => [name, kubectl(name)])),
   k3s: bundled("k3s", ["kubectl", "crictl", "ctr"]),
-  microk8s: bundled("microk8s", ["kubectl", "ctr", "helm"]),
+  microk8s: bundled("microk8s", ["kubectl", "ctr", "helm", "helm3"]),
   docker: containerExec("docker", OPTION_SPECS.docker, OPTION_SPECS.dockerExec),
   nerdctl: containerExec("nerdctl", OPTION_SPECS.nerdctl, OPTION_SPECS.nerdctlExec),
   podman: containerExec("podman", OPTION_SPECS.podman, OPTION_SPECS.podmanExec, new Set(["-l", "--latest", "--cidfile"])),

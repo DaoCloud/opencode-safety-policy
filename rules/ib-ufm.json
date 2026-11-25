@@ -130,10 +130,17 @@
       "severity": "medium",
       "reason": "修改 GPU 持久化、功耗、时钟、ECC、计算模式或 MIG 配置需要确认",
       "command": "nvidia-smi",
-      "pattern": "(^| )(-pm|--persistence-mode|-pl|--power-limit|-ac|--applications-clocks|-rac|--reset-applications-clocks|-lgc|--lock-gpu-clocks|-rgc|--reset-gpu-clocks|-lmc|--lock-memory-clocks|-rmc|--reset-memory-clocks|--ecc-config|--reset-ecc-errors|--compute-mode|-mig|--multi-instance-gpu|-am|--accounting-mode|-caa|--clear-accounted-apps|--cuda-clocks)(=| |$)",
+      "pattern": "(^| )(-pm|--persistence-mode|-pl|--power-limit|-ac|--applications-clocks|-rac|--reset-applications-clocks|-lgc|--lock-gpu-clocks|-rgc|--reset-gpu-clocks|-lmc|--lock-memory-clocks|-rmc|--reset-memory-clocks|--ecc-config|--reset-ecc-errors|--compute-mode|-mig|--multi-instance-gpu|-am|--accounting-mode|-caa|--clear-accounted-apps|--cuda-clocks|-cgi|-cci|-dgi|-dci|--create-gpu-instances?|--create-compute-instances?|--destroy-gpu-instances?|--destroy-compute-instances?)(=| |$)|^nvidia-smi( -\\S+( [^-\\s]\\S*)?)* (-c|-e)(=| |$)",
       "examples": {
-        "match": ["nvidia-smi -pm 1", "nvidia-smi -i 0 -pl 300", "nvidia-smi --compute-mode=EXCLUSIVE_PROCESS"],
-        "ignore": ["nvidia-smi --query-gpu=name --format=csv", "nvidia-smi -L", "echo nvidia-smi -pm 1"]
+        "match": [
+          "nvidia-smi -pm 1",
+          "nvidia-smi -i 0 -pl 300",
+          "nvidia-smi --compute-mode=EXCLUSIVE_PROCESS",
+          "nvidia-smi -i 0 -c 3",
+          "nvidia-smi -e 0",
+          "nvidia-smi mig -dgi -i 0"
+        ],
+        "ignore": ["nvidia-smi --query-gpu=name --format=csv", "nvidia-smi -L", "nvidia-smi dmon -c 5", "echo nvidia-smi -pm 1"]
       }
     },
     {

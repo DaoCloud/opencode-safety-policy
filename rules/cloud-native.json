@@ -99,15 +99,26 @@
       "severity": "high",
       "reason": "禁止驱逐或隔离 Kubernetes 节点",
       "command": ["kubectl", "oc", "kubecolor"],
-      "subcommands": ["drain", "cordon", "taint", "adm drain", "adm cordon", "adm taint"],
+      "subcommands": ["drain", "cordon", "adm drain", "adm cordon"],
       "examples": {
-        "match": [
-          "kubectl drain node1 --ignore-daemonsets",
-          "kubectl cordon node1",
-          "kubectl taint nodes node1 key=value:NoSchedule",
-          "oc adm drain node1 --ignore-daemonsets"
-        ],
+        "match": ["kubectl drain node1 --ignore-daemonsets", "kubectl cordon node1", "oc adm drain node1 --ignore-daemonsets"],
         "ignore": ["kubectl uncordon node1", "kubectl describe node drain", "oc adm top nodes", "echo kubectl drain node1"]
+      }
+    },
+    {
+      "id": "k8s-node-taint",
+      "severity": "high",
+      "reason": "禁止给 Kubernetes 节点添加污点（NoExecute 会驱逐节点上的 Pod）",
+      "command": ["kubectl", "oc", "kubecolor"],
+      "subcommands": ["taint", "adm taint"],
+      "pattern": ":(NoSchedule|PreferNoSchedule|NoExecute)( |$)",
+      "examples": {
+        "match": ["kubectl taint nodes node1 key=value:NoSchedule", "oc adm taint nodes n1 dedicated=gpu:NoExecute --overwrite"],
+        "ignore": [
+          "kubectl taint nodes node1 key=value:NoSchedule-",
+          "kubectl taint nodes --all node-role.kubernetes.io/control-plane-",
+          "echo kubectl taint nodes n1 k=v:NoExecute"
+        ]
       }
     },
     {
@@ -202,11 +213,12 @@
       "id": "helm-uninstall",
       "severity": "high",
       "reason": "禁止卸载 Helm release",
-      "command": "helm",
+      "command": ["helm", "helm3"],
       "subcommands": ["uninstall", "delete", "del", "un"],
+      "pattern": "(?<!(^| )plugin) (uninstall|delete|del|un)( |$)",
       "examples": {
-        "match": ["helm uninstall api", "helm -n prod delete api", "helm --kube-context prod un api --keep-history"],
-        "ignore": ["helm list -A", "helm status api", "echo helm uninstall api"]
+        "match": ["helm uninstall api", "helm -n prod delete api", "helm --kube-context prod un api --keep-history", "microk8s helm3 uninstall api"],
+        "ignore": ["helm list -A", "helm status api", "helm plugin uninstall diff", "echo helm uninstall api"]
       }
     },
     {
@@ -260,7 +272,6 @@
         "container kill",
         "container prune",
         "image rm",
-        "image prune",
         "volume rm",
         "volume prune",
         "network rm",
@@ -296,6 +307,29 @@
           "docker logs app",
           "echo docker rm -f app"
         ]
+      }
+    },
+    {
+      "id": "image-prune-all",
+      "severity": "high",
+      "reason": "禁止删除所有未被容器使用的镜像（离线环境无法重新拉取）",
+      "command": ["docker", "nerdctl", "podman"],
+      "subcommands": ["image prune"],
+      "flags": ["-a", "--all"],
+      "examples": {
+        "match": ["docker image prune -a -f", "podman image prune --all --force"],
+        "ignore": ["docker image prune -f", "docker image ls -a", "echo docker image prune -a"]
+      }
+    },
+    {
+      "id": "image-prune",
+      "severity": "medium",
+      "reason": "清理悬空镜像需要确认",
+      "command": ["docker", "nerdctl", "podman"],
+      "subcommands": ["image prune"],
+      "examples": {
+        "match": ["docker image prune -f", "nerdctl -n k8s.io image prune --force"],
+        "ignore": ["docker image ls", "docker system df", "echo docker image prune -f"]
       }
     },
     {
