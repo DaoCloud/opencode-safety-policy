@@ -17,7 +17,7 @@
 | `rules/ssh-readonly.json` | 远端只读白名单 | 新增只读命令，见[第 4 节](#4-修改只读白名单) |
 | `test/rules-examples.test.ts` | 遍历所有内置规则，逐条运行 `examples` | 一般不用改 |
 | `docs/opencode-safety-policy-design.md` | 4.2 规则分类表、4.3 只读白名单、6 目录结构 | 见 [3.7](#37-同步文档) |
-| `README.md` | 开头的覆盖范围列表 | 新增一类目标时 |
+| `README.md` | 开头的覆盖范围列表，“内置规则”一节的文件表 | 新增一类目标或新建规则文件时 |
 | `docs/opencode-safety-policy-custom-rules.md` | 规则字段的语义 | 新增或改变规则字段时 |
 
 插件按文件名顺序加载 `rules/` 下所有的 `.json` 文件，不需要在代码中登记。没有 `rules` 字段的文件（如 `ssh-readonly.json`）会被跳过。`package.json` 的 `files` 已包含整个 `rules/` 目录，新文件会自动打进发布包。
@@ -48,7 +48,7 @@
 }
 ```
 
-新建文件后要更新设计文档 4.2 和 6，以及 README 开头的覆盖范围列表，见 [3.7](#37-同步文档)。
+新建文件后要更新设计文档 4.2 和 6，以及 README 开头的覆盖范围列表和“内置规则”一节的文件表，见 [3.7](#37-同步文档)。
 
 ### 3.2 编写规则
 
@@ -166,7 +166,7 @@ cd /tmp && bun /path/to/opencode-safety-policy/cli.ts test "kubectl -n prod dele
 | 改动 | 同步 |
 |---|---|
 | 新增规则 | 设计文档 [4.2](opencode-safety-policy-design.md#42-规则分类明细) 中对应类别的命令列表 |
-| 新增规则文件 | 设计文档 4.2 加一行，[6](opencode-safety-policy-design.md#6-仓库目录结构与模块划分) 的目录树加一行，README 开头的覆盖范围列表 |
+| 新增规则文件 | 设计文档 4.2 加一行，[6](opencode-safety-policy-design.md#6-仓库目录结构与模块划分) 的目录树加一行，README 开头的覆盖范围列表，README“内置规则”一节的文件表加一行 |
 | 修改只读白名单 | 设计文档 [4.3](opencode-safety-policy-design.md#43-远端-ssh-只读白名单rulesssh-readonlyjson用于-strict-模式减少误报) |
 | 新增或改变规则字段 | 设计文档 [4.1](opencode-safety-policy-design.md#41-声明式规则格式人工扩展极简)，自定义规则指南第 4 节 |
 | 发版 | 在 Release 说明中列出新增的规则 `id` |

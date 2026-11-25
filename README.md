@@ -1,6 +1,6 @@
 # opencode-safety-policy
 
-这是 OpenCode 2.x 的安全策略插件。AI Agent 执行 shell 命令、调用工具或发起 HTTP 请求之前，插件先做静态分析，拦下高危操作。分析会穿透 `ssh`、`sudo`、`bash -c`、`kubectl exec` 等多层封装，覆盖以下几类目标：
+这是 OpenCode 2.x 的安全策略插件。AI Agent 执行 shell 命令、调用工具或发起 HTTP 请求之前，插件先做静态分析，拦下高危操作。分析会穿透 `ssh`、`sudo`、`bash -c`、`kubectl exec` 等多层封装，覆盖以下几类目标，规则文件见[内置规则](#内置规则)：
 
 - 本机与 Linux 服务器：`rm -rf`、`mkfs`、`dd`、`reboot`、`systemctl stop` 等
 - Kubernetes 与容器：`kubectl delete`、`helm uninstall`、`docker rm` 等
@@ -170,6 +170,28 @@ tar xzf daocloud-opencode-safety-policy-$VERSION.tgz -C ~/.config/opencode/safet
 | `enableServerSlashCommand` | 为不运行 TUI 的客户端（如 Web UI）注册服务端 `/safety`，默认为 `false`。运行 TUI 时不要开启 |
 
 如果 `options` 非法或规则文件无法加载，插件会拒绝所有工具调用（`off` 模式除外），原因以 `[safety-policy:config-error]` 开头。完整示例见设计文档 [7](docs/opencode-safety-policy-design.md#7-配置示例opencodejson)。
+
+## 内置规则
+
+随插件发布的规则按类别放在 [`rules/`](rules/) 目录，安装后全部生效：
+
+| 规则文件 | 覆盖范围 |
+|---|---|
+| [`cloud-native.json`](rules/cloud-native.json) | Kubernetes、Helm、etcd、Velero、容器运行时 |
+| [`linux-host.json`](rules/linux-host.json) | 文件删除、磁盘与分区、服务、进程、重启、用户 |
+| [`spectrum-cumulus.json`](rules/spectrum-cumulus.json) | NVIDIA Spectrum 交换机（NVUE、NCLU、switchd、ONIE） |
+| [`ib-ufm.json`](rules/ib-ufm.json) | InfiniBand 交换机、主机侧 IB 与 GPU 工具、UFM |
+| [`oob-redfish.json`](rules/oob-redfish.json) | Redfish、IPMI、BMC |
+| [`network-db.json`](rules/network-db.json) | 网络配置、防火墙、rsync、数据库 |
+| [`opencode-tools.json`](rules/opencode-tools.json) | OpenCode 内置工具与 MCP 工具 |
+| [`ssh-readonly.json`](rules/ssh-readonly.json) | 远端只读命令白名单，不是拦截规则。`strict` 下，未命中规则的远端命令只有在白名单中才直接放行 |
+
+- 每条规则的 `severity` 决定它在各模式下的处置，见[运行模式](#运行模式)。`examples` 列出了它应该命中和不应该命中的命令。
+- 拦截信息 `[safety-policy:<规则 ID>]` 中的规则 ID 就是规则的 `id`，可以在这些文件中搜到。想知道某条命令命中哪条规则，用 `/safety test <命令>`。
+- 以下几类保护写在代码中，不在 `rules/` 目录：
+  - `self-protect`：禁止修改插件、OpenCode 配置和规则文件，禁止读取 OpenCode Server 凭据和数据库，禁止调用本机 Server API。见 [`self-protect.ts`](src/rules/self-protect.ts) 和 [`server-api.ts`](src/rules/server-api.ts)
+  - `protected-endpoint-write`：配置了 `protectedEndpoints` 后，拦截发往这些端点的写请求。见 [`index.ts`](src/rules/index.ts)
+  - `unknown-remote-command`：`strict` 下，不在只读白名单中的远端命令弹出审批
 
 ## 扩展规则
 
