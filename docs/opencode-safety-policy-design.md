@@ -53,6 +53,7 @@
 - 对于远端主机上**预先存在且内容不可见**的脚本（如 `ssh host /opt/cleanup.sh`）或**从公网实时下载执行**的流（如 `curl ... | ssh host sh`），插件无法静态知道内部指令，但可通过策略对这类高风险形态执行 **fail-closed（默认 `deny` 或强制 `ask` 人工审批）**。
 - 对于通过脚本刻意混淆、动态拼接 URL/IP 调用 Redfish/UFM API 的对抗性绕过，纯静态预扫无法做到 100% 拦截，需配合管理网段隔离与最小权限凭据共同兜底。
 - **运行期值拼入再解析脚本的边界**：变量、`xargs -I`/`find -exec` 的 `{}` 与 `parallel` 未知输入拼入会被 shell 再次解析的文本（`bash -c "echo $X"`、`eval echo $X`、`ssh host "ls $X"`、`xargs -I{} sh -c 'echo {}'`）时，只按一个变量操作数判定，值中的 `;`、`$(...)` 等元字符被再次解析后执行的命令不可见。全部按 opaque 处理会误拦大量常见用法，这类刻意构造的注入属于上文的对抗性绕过。
+- **大小写不敏感文件系统边界**：macOS 默认的 APFS 不区分大小写，`/USR` 与 `/usr`、`OpenCode.json` 与 `opencode.json` 指向同一个文件，PATH 中查找 `KUBECTL` 也会找到 `kubectl`。插件对规则的 `command`、`pattern` 与受保护路径都按大小写敏感比较，因此改了大小写的命令名（`KUBECTL delete ns prod`）、系统目录（`rm -rf /USR` 只按 `rm-local` 判定）与受保护路径（`echo x > OpenCode.json`，写入 `.OPENCODE/plugins/` 或 `~/.config/OpenCode/plugins/`）都能绕过检查。正常使用时模型不会这样写，这属于上文的对抗性绕过，当前只记录、不修复。可选的修复方向是在 darwin 上把命令名与路径统一转为小写后再匹配，代价是改变外挂规则中大小写敏感 `pattern` 的行为，并在格式化为区分大小写的卷上多拦。Linux 文件系统区分大小写，不受影响。
 
 ---
 

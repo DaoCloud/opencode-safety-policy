@@ -470,6 +470,7 @@ P0 的核心机制依赖几处只通过读源码推断的行为。先用一次�
 | 包名 | P0-1 之前 | 已定：`@daocloud/opencode-safety-policy` |
 | 分发渠道 | R-3 之前 | 已定：不使用 npm 源。联网机器从 GitHub tag 安装（`github:DaoCloud/opencode-safety-policy#vX.Y.Z`），离线与系统级部署用 GitHub Release 中的 tgz |
 | 系统级部署验证用的容器/VM | R-2 之前 | 已定：一次性 Docker 容器 `ubuntu:24.04`（`test/system/Dockerfile`） |
+| macOS 大小写不敏感文件系统的绕过 | 需要防御刻意对抗时 | 暂不修复，记录在设计文档 [1.2](./opencode-safety-policy-design.md#12-非目标与安全边界) 与 README 安全边界 |
 
 ## 13. 进度清单
 
